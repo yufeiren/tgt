@@ -57,10 +57,12 @@ static struct option const long_options[] = {
 	{"debug", required_argument, 0, 'd'},
 	{"version", no_argument, 0, 'V'},
 	{"help", no_argument, 0, 'h'},
+	{"cache_size", required_argument, 0, 's'},
+	{"cache_bs", required_argument, 0, 'c'},
 	{0, 0, 0, 0},
 };
 
-static char *short_options = "fC:d:t:Vh";
+static char *short_options = "fC:d:t:Vhs:c:";
 static char *spare_args;
 
 static void usage(int status)
@@ -504,6 +506,8 @@ int main(int argc, char **argv)
 	struct sigaction sa_new;
 	int err, ch, longindex, nr_lld = 0;
 	int is_daemon = 1, is_debug = 0;
+	long numa_cache_size;
+	int numa_cache_cbs;
 	int ret;
 
 	sa_new.sa_handler = signal_catch;
@@ -546,6 +550,11 @@ int main(int argc, char **argv)
 		case 'h':
 			usage(0);
 			break;
+		case 's':
+			numa_cache_size = atol(optarg);
+			break;
+		case 'c':
+			numa_cache_cbs = atoi(optarg);
 		default:
 			if (strncmp(argv[optind - 1], "--", 2))
 				usage(1);

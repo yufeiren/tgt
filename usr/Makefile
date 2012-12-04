@@ -24,6 +24,12 @@ TGTD_OBJS += iscsi/iser.o iscsi/iser_text.o
 LIBS += -libverbs -lrdmacm
 endif
 
+ifneq ($(NUMA_CACHE),)
+CFLAGS += -DNUMA_CACHE
+TGTD_OBJS += cache.o hash.o
+endif
+
+
 INCLUDES += -I.
 
 CFLAGS += -D_GNU_SOURCE
