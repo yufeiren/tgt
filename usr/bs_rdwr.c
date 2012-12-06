@@ -249,17 +249,21 @@ write:
 	case READ_10:
 	case READ_12:
 	case READ_16:
-		dprintf("numa cache: start server an io of read request\n");
+		length = scsi_get_in_length(cmd);
+		dprintf("numa cache: =================================\n");
+		dprintf("numa cache: start serve an io of read request\n");
 		lba = offset >> cmd->dev->blk_shift;
-		dprintf("numa cache: lba is: %ld\n", lba);
+		dprintf("numa cache: lba is: %ld, data length is %ld\n", \
+			lba, length);
 
 		/* chech if block in cache */
 		struct cache_block *cb;
 		cb = search_numa_cache(lba, &(hc.nc[0]));
 		if (cb != NULL) {
 			dprintf("numa cache: hit cache\n");
+		} else {
+			dprintf("numa cache: cache not hit\n");
 		}
-		dprintf("numa cache: cache not hit\n");
 
 		/* load data from disk */
 		length = scsi_get_in_length(cmd);
@@ -277,6 +281,8 @@ write:
 		dprintf("numa cache: start cache data\n");
 		update_cache_block(&(hc.nc[0]), lba, \
 				   scsi_get_in_buffer(cmd));
+		dprintf("numa cache: finish serve an io request\n");
+		dprintf("numa cache: --------------------------------\n");
 
 		break;
 	case PRE_FETCH_10:

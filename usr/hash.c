@@ -29,7 +29,7 @@ struct cache_block *search_numa_cache(uint64_t lba, \
 	is_found = 0;
 	list_for_each_entry(cur, &(clist->list), list) {
 		if (cur->lba == lba) {
-			cur->hit_count ++;
+			cur->hit_count;
 			dprintf("numa cache: hit cache %d times\n", \
 				cur->hit_count);
 			is_found = 1;
@@ -43,15 +43,18 @@ struct cache_block *search_numa_cache(uint64_t lba, \
 		cur->hit_count ++;
 		/* re-sort hash tablecell list */
 		dprintf("numa cache: re-sort hash tablecell\n");
-		sort_cache_block(cur, clist);
+		sort_tablecell_list(cur, clist);
 
 		/* re-sort hit list */
 		dprintf("numa cache: re-sort hit list\n");
-		sort_cache_block(cur, hit_head);
+		sort_hit_list(cur, hit_head);
+
+		list_for_each_entry(cur, &(hit_head->hit_list), hit_list) {
+				dprintf("numa cache: search: lba %ld, hit: %d, addr: %x\n", cur->lba, cur->hit_count, cur->addr);
+		}
 	}
 
 	cache_hash_table_unlock(ht);
-	dprintf("numa cache: unlock ht\n");
 
 	if (is_found)
 		return cur;
@@ -59,7 +62,7 @@ struct cache_block *search_numa_cache(uint64_t lba, \
 	return NULL;
 }
 
-void sort_cache_block(struct cache_block *cb, struct cache_block *head)
+void sort_tablecell_list(struct cache_block *cb, struct cache_block *head)
 {
 	struct list_head *pos;
 	struct cache_block *pre;
@@ -71,13 +74,36 @@ void sort_cache_block(struct cache_block *cb, struct cache_block *head)
 			break;
 	}
 	dprintf("numa cache: sort cache block: end for\n");
-	if (pos != &(cb->list)) {
-		list_del(&(cb->list));
-		cb->list.next = pos->next;
-		cb->list.prev = pos;
-		pos->next = &(cb->list);
-		pos->next->prev = &(cb->list);
+
+	list_del(&(cb->list));
+	/* insert cb into pos's next */
+	cb->list.next = pos->next;
+	cb->list.prev = pos;
+	pos->next = &(cb->list);
+	cb->list.next->prev = &(cb->list);
+
+	return;
+}
+
+void sort_hit_list(struct cache_block *cb, struct cache_block *head)
+{
+	struct list_head *pos;
+	struct cache_block *pre;
+
+	dprintf("numa cache: sort hit list: start for\n");
+	for (pos = &(cb->hit_list); pos != &(head->hit_list); pos = pos->prev) {
+		pre = list_entry(pos, struct cache_block, hit_list);
+		if (pre->hit_count > cb->hit_count)
+			break;
 	}
+	dprintf("numa cache: sort hit list: end for\n");
+
+	list_del(&(cb->hit_list));
+	/* insert cb into pos's next */
+	cb->hit_list.next = pos->next;
+	cb->hit_list.prev = pos;
+	pos->next = &(cb->hit_list);
+	cb->hit_list.next->prev = &(cb->hit_list);
 
 	return;
 }

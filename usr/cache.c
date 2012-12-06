@@ -80,7 +80,7 @@ int alloc_nc(struct numa_cache *nc, struct cache_param *cp, int numa_index)
 
 	/* alloc cache blocks info */
 	nc->cb = (struct cache_block *) \
- 		numa_alloc_onnode(nc->nb * sizeof(struct cache_block), \
+		numa_alloc_onnode(nc->nb * sizeof(struct cache_block), \
 			numa_index);
 	if (nc->cb == NULL) {
 		eprintf("numa_alloc_onnode cache blocks failed\n");
@@ -94,6 +94,7 @@ int alloc_nc(struct numa_cache *nc, struct cache_param *cp, int numa_index)
 		nc->cb[i].cbs = cp->cbs;
 		nc->cb[i].hit_count = 0;
 		nc->cb[i].addr = nc->buffer + i * cp->cbs;
+		dprintf("numa cache: memory block addr %x\n", nc->cb[i].addr);
 		INIT_LIST_HEAD(&(nc->cb[i].list));
 		INIT_LIST_HEAD(&(nc->cb[i].hit_list));
 
@@ -118,22 +119,22 @@ void update_cache_block(struct numa_cache *nc, uint64_t lba, char *data)
 
 	/* search hash table first */
 	cache_hash_table_lock(&(nc->ht));
-	/*cache_list_lock(clist); */
 	/* search */
 	cur = NULL;
 	is_found = 0;
 	list_for_each_entry(cur, &(clist->list), list) {
 		if (cur->lba == lba) {
+			is_found = 1;
 			break;
 		}
 	}
 
 	if (is_found) { /* already had one copy */
-		dprintf("numa cache: already cache. update data\n");
+		dprintf("numa cache: already cached, update cache\n");
 		memcpy(cur->addr, data, cur->cbs);
 		goto finish;
 	} else {
-		dprintf("numa cache: find a block and update data\n");
+		dprintf("numa cache: search a block and update its data\n");
 		/* check ununsed list */
 		dprintf("numa cache: check unused list\n");
 		if (!list_empty(&(nc->unused_list.list))) {
@@ -147,30 +148,43 @@ void update_cache_block(struct numa_cache *nc, uint64_t lba, char *data)
 			cur->lba = lba;
 			cur->is_valid = CACHE_VALID;
 
+			dprintf("numa cache: add block into ht\n");
 			list_add_tail(&(cur->list), &(clist->list));
+
 			/* insert into hit list */
-			list_add_tail(&(cur->hit_list), &(nc->hit_list.list));
+			dprintf("numa cache: add block into hit list\n");
+			list_add_tail(&(cur->hit_list), &(nc->hit_list.hit_list));
 			goto finish;
 		}
 		
 		/* check hit count list */
 		dprintf("numa cache: check hit count list\n");
-		if (!list_empty(&(nc->hit_list.list))) {
+		if (!list_empty(&(nc->hit_list.hit_list))) {
 			/* get the last item */
-			dprintf("numa cache: find a block in hit list\n");
-			pos = nc->hit_list.list.prev;
-			cur = list_entry(pos, struct cache_block, list);
+			dprintf("numa cache: LRU replacement: get the last block in hit list\n");
+			pos = nc->hit_list.hit_list.prev;
+			cur = list_entry(pos, struct cache_block, hit_list);
 
+			dprintf("numa cache: delete from hash table\n");
 			/* delete from hash table */
 			list_del(&(cur->list));
 
+			dprintf("numa cache: copy data into memory %x\n", cur->addr);
 			memcpy(cur->addr, data, cur->cbs);
 			cur->hit_count = 1;
 			cur->lba = lba;
 			cur->is_valid = CACHE_VALID;
 
+			/* move the last one to the head of hit time is 1 */
+			sort_hit_list(cur, &(nc->hit_list));
+
 			/* add into hash table */
 			list_add_tail(&(cur->list), &(clist->list));
+
+			list_for_each_entry(cur, &(nc->hit_list.hit_list), hit_list) {
+				dprintf("numa cache: lba %ld, hit: %d, addr: %x\n", cur->lba, cur->hit_count, cur->addr);
+			}
+
 			goto finish;
 		}
 	}
@@ -178,7 +192,6 @@ void update_cache_block(struct numa_cache *nc, uint64_t lba, char *data)
 finish:
 	cache_hash_table_unlock(&(nc->ht));
 	return;
-
 }
 
 

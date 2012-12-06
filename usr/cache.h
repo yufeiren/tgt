@@ -77,7 +77,9 @@ int ht_hash_key(uint64_t lba, struct cache_hash_table *ht);
 
 /* search hash table, if hit, sort current cell and hit count list */
 
-void sort_cache_block(struct cache_block *cb, struct cache_block *head);
+void sort_tablecell_list(struct cache_block *cb, struct cache_block *head);
+
+void sort_hit_list(struct cache_block *cb, struct cache_block *head);
 
 void update_cache_block(struct numa_cache *nc, uint64_t lba, char *data);
 
