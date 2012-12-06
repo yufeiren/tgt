@@ -40,6 +40,9 @@
 #include "scsi.h"
 #include "spc.h"
 #include "bs_thread.h"
+#include "cache.h"
+
+extern struct host_cache hc;
 
 static void set_medium_error(int *result, uint8_t *key, uint16_t *asc)
 {
@@ -73,6 +76,7 @@ static void bs_rdwr_request(struct scsi_cmd *cmd)
 	int do_verify = 0;
 	int i;
 	char *ptr;
+	uint64_t lba = 0;
 
 	ret = length = 0;
 	key = asc = 0;
@@ -245,6 +249,19 @@ write:
 	case READ_10:
 	case READ_12:
 	case READ_16:
+		dprintf("numa cache: start server an io of read request\n");
+		lba = offset >> cmd->dev->blk_shift;
+		dprintf("numa cache: lba is: %ld\n", lba);
+
+		/* chech if block in cache */
+		struct cache_block *cb;
+		cb = search_numa_cache(lba, &(hc.nc[0]));
+		if (cb != NULL) {
+			dprintf("numa cache: hit cache\n");
+		}
+		dprintf("numa cache: cache not hit\n");
+
+		/* load data from disk */
 		length = scsi_get_in_length(cmd);
 		ret = pread64(fd, scsi_get_in_buffer(cmd), length,
 			      offset);
@@ -255,6 +272,11 @@ write:
 		if ((cmd->scb[0] != READ_6) && (cmd->scb[1] & 0x10))
 			posix_fadvise(fd, offset, length,
 				      POSIX_FADV_NOREUSE);
+
+		/* cache data */
+		dprintf("numa cache: start cache data\n");
+		update_cache_block(&(hc.nc[0]), lba, \
+				   scsi_get_in_buffer(cmd));
 
 		break;
 	case PRE_FETCH_10:

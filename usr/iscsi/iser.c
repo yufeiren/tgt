@@ -2401,6 +2401,7 @@ static int iser_scsi_cmd_rx(struct iser_task *task)
 	uint32_t xfer_sz = ntohl(req_bhs->data_length);
 	int err = 0;
 	uint64_t lba;
+	uint64_t segid;	/* segment id */
 
 	task->is_read = flags & ISCSI_FLAG_CMD_READ;
 	task->is_write = flags & ISCSI_FLAG_CMD_WRITE;
@@ -2476,9 +2477,11 @@ static int iser_scsi_cmd_rx(struct iser_task *task)
 
 	/* get lba and schedule */
 	lba = scsi_rw_offset(req_bhs->cdb);
-	dprintf("this lba is %d\n", lba);
+	dprintf("this lba is: %ld\n", lba);
 
-	/* get segment id according to lba */
+	/* get segment id according to lba
+	segid = (lba << ) / cbs;
+	dprintf("segment id is: %d\n", lba); */
 
 	/* dispatch task to specified node */
 

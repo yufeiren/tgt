@@ -41,8 +41,10 @@
 #include "driver.h"
 #include "work.h"
 #include "util.h"
+#include "cache.h"
 
 unsigned long pagesize, pageshift;
+struct host_cache hc;
 
 int system_active = 1;
 static int ep_fd;
@@ -78,6 +80,8 @@ static void usage(int status)
 		"-f, --foreground        make the program run in the foreground\n"
 		"-C, --control-port NNNN use port NNNN for the mgmt channel\n"
 		"-t, --nr_iothreads NNNN specify the number of I/O threads\n"
+		"-s, --cache_size NNNN   specify the size of numa-aware cache for each numa node\n"
+		"-c, --cache_bs NNNN     specify the size of cache block\n"
 		"-d, --debug debuglevel  print debugging information\n"
 		"-V, --version           print version and exit\n"
 		"-h, --help              display this help and exit\n",
@@ -506,9 +510,8 @@ int main(int argc, char **argv)
 	struct sigaction sa_new;
 	int err, ch, longindex, nr_lld = 0;
 	int is_daemon = 1, is_debug = 0;
-	long numa_cache_size;
-	int numa_cache_cbs;
 	int ret;
+	struct cache_param cp;
 
 	sa_new.sa_handler = signal_catch;
 	sigemptyset(&sa_new.sa_mask);
@@ -551,10 +554,11 @@ int main(int argc, char **argv)
 			usage(0);
 			break;
 		case 's':
-			numa_cache_size = atol(optarg);
+			cp.buffer_size = atol(optarg);
 			break;
 		case 'c':
-			numa_cache_cbs = atoi(optarg);
+			cp.cbs = atoi(optarg);
+			break;
 		default:
 			if (strncmp(argv[optind - 1], "--", 2))
 				usage(1);
@@ -605,6 +609,9 @@ int main(int argc, char **argv)
 		exit(1);
 
 	bs_init();
+
+	dprintf("numa cache: init hc addr is %x\n", &hc);
+	init_cache(&hc, &cp);
 
 	event_loop();
 

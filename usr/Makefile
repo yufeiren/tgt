@@ -27,6 +27,7 @@ endif
 ifneq ($(NUMA_CACHE),)
 CFLAGS += -DNUMA_CACHE
 TGTD_OBJS += cache.o hash.o
+LIBS += -lnuma
 endif
 
 

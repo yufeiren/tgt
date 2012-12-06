@@ -2,11 +2,21 @@
  * Yufei Ren (yufei.ren@stonybrook.edu)
  */
 
+#include <pthread.h>
+#include <stdio.h>
+#include <inttypes.h>
+#include <sys/types.h>
+#include <numa.h>
+
+#include "list.h"
+#include "log.h"
+#include "tgtd.h"
+
 #define CACHE_INVALID	0
 #define CACHE_VALID	1
 
 struct cache_param {
-	int buffer_size;
+	long buffer_size;
 	int cbs;
 	char *mem;	/* malloc or shm */
 };
@@ -54,20 +64,22 @@ int cache_list_lock_init(struct cache_block *cb);
 int cache_list_lock(struct cache_block *cb);
 int cache_list_unlock(struct cache_block *cb);
 
-int cache_hash_table_lock_init(struct cache_hash_table *cb);
-int cache_hash_table_lock(struct cache_hash_table *cb);
-int cache_hash_table_unlock(struct cache_hash_table *cb);
+int cache_hash_table_lock_init(struct cache_hash_table *ht);
+int cache_hash_table_lock(struct cache_hash_table *ht);
+int cache_hash_table_unlock(struct cache_hash_table *ht);
+
+struct cache_block *search_numa_cache(uint64_t lba, \
+				      struct numa_cache *nc);
 
 /* hash table functions */
 
-int ht_hash_key(uinit64_t lba, struct cache_hash_table *ht);
+int ht_hash_key(uint64_t lba, struct cache_hash_table *ht);
 
 /* search hash table, if hit, sort current cell and hit count list */
-struct cache_block *ht_search(uint64_t lba, \
-			      struct cache_hash_table *ht, \
-			      struct cache_block *hit_head);
 
 void sort_cache_block(struct cache_block *cb, struct cache_block *head);
 
 void update_cache_block(struct numa_cache *nc, uint64_t lba, char *data);
+
+
 
