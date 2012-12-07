@@ -4,6 +4,16 @@
 
 #include "cache.h"
 
+uint64_t offset2segid(uint64_t offset, struct host_cache *hc)
+{
+	return (offset / hc->cbs);
+}
+
+int offset2ncid(uint64_t offset, struct host_cache *hc)
+{
+	return (offset / hc->cbs) % hc->numa_nodes;
+}
+
 int init_cache(struct host_cache *hc, struct cache_param *cp)
 {
 	int i;
@@ -16,6 +26,9 @@ int init_cache(struct host_cache *hc, struct cache_param *cp)
 	hc->numa_nodes = numa_num_configured_nodes(); /*numa_max_node();*/
 	dprintf("numa cache: this host have %d numa nodes in total\n", \
 		hc->numa_nodes);
+
+	hc->buffer_size = hc->numa_nodes * cp->buffer_size;
+	hc->cbs = cp->cbs;
 	
 	hc->nc = (struct numa_cache *) \
 		malloc(hc->numa_nodes * sizeof(struct numa_cache));
@@ -95,6 +108,8 @@ int alloc_nc(struct numa_cache *nc, struct cache_param *cp, int numa_index)
 		nc->cb[i].hit_count = 0;
 		nc->cb[i].addr = nc->buffer + i * cp->cbs;
 		dprintf("numa cache: memory block addr %x\n", nc->cb[i].addr);
+		memset(nc->cb[i].addr, '\0', cp->cbs);
+
 		INIT_LIST_HEAD(&(nc->cb[i].list));
 		INIT_LIST_HEAD(&(nc->cb[i].hit_list));
 

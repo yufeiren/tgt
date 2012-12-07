@@ -38,6 +38,9 @@
 #include "tgtadm_error.h"
 #include "util.h"
 #include "bs_thread.h"
+#include "cache.h"
+
+extern struct host_cache hc;
 
 LIST_HEAD(bst_list);
 
@@ -185,31 +188,41 @@ static void *bs_thread_worker_fn(void *arg)
 	struct bs_thread_info *info = arg;
 	struct scsi_cmd *cmd;
 	sigset_t set;
+	int nc_id;
 
 	sigfillset(&set);
 	sigprocmask(SIG_BLOCK, &set, NULL);
 
 	pthread_mutex_lock(&info->startup_lock);
-	dprintf("started this thread\n");
+	/* round robin create thread on each node */
+	nc_id = info->thr_node_id;
+	dprintf("started this thread on node: %d\n", nc_id);
+	info->thr_node_id = (info->thr_node_id + 1) % info->nr_numa_nodes;
+
+	if (numa_run_on_node(info->thr_node_id) != 0) {
+		eprintf("numa cache: numa_run_on_node fail\n");
+		pthread_exit(NULL);
+	}
+
 	pthread_mutex_unlock(&info->startup_lock);
 
 	while (!info->stop) {
-		pthread_mutex_lock(&info->pending_lock);
+		pthread_mutex_lock(&info->pending_lock[nc_id]);
 	retest:
-		if (list_empty(&info->pending_list)) {
-			pthread_cond_wait(&info->pending_cond, &info->pending_lock);
+		if (list_empty(&info->pending_list[nc_id])) {
+			pthread_cond_wait(&info->pending_cond[nc_id], &info->pending_lock[nc_id]);
 			if (info->stop) {
-				pthread_mutex_unlock(&info->pending_lock);
+				pthread_mutex_unlock(&info->pending_lock[nc_id]);
 				pthread_exit(NULL);
 			}
 			goto retest;
 		}
 
-		cmd = list_first_entry(&info->pending_list,
+		cmd = list_first_entry(&info->pending_list[nc_id],
 				       struct scsi_cmd, bs_list);
 
 		list_del(&cmd->bs_list);
-		pthread_mutex_unlock(&info->pending_lock);
+		pthread_mutex_unlock(&info->pending_lock[nc_id]);
 
 		info->request_fn(cmd);
 
@@ -335,10 +348,21 @@ tgtadm_err bs_thread_open(struct bs_thread_info *info, request_func_t *rfn,
 	eprintf("%d\n", nr_threads);
 	info->request_fn = rfn;
 
-	INIT_LIST_HEAD(&info->pending_list);
+	/* add numa nodes support */
+	if (numa_available() != 0) {
+		eprintf("numa cache: Does not support NUMA API\n");
+		return -1;
+	}
 
-	pthread_cond_init(&info->pending_cond, NULL);
-	pthread_mutex_init(&info->pending_lock, NULL);
+	info->nr_numa_nodes = numa_num_configured_nodes();
+	info->thr_node_id = 0;
+
+	for (i = 0; i < info->nr_numa_nodes; i++) {
+		INIT_LIST_HEAD(&info->pending_list[i]);
+
+		pthread_cond_init(&info->pending_cond[i], NULL);
+		pthread_mutex_init(&info->pending_lock[i], NULL);
+	}
 	pthread_mutex_init(&info->startup_lock, NULL);
 
 	pthread_mutex_lock(&info->startup_lock);
@@ -366,9 +390,12 @@ destroy_threads:
 		eprintf("stopped the worker thread %d\n", i - 1);
 	}
 
-	pthread_cond_destroy(&info->pending_cond);
-	pthread_mutex_destroy(&info->pending_lock);
+	for (i = 0; i < info->nr_numa_nodes; i++) {
+		pthread_cond_destroy(&info->pending_cond[i]);
+		pthread_mutex_destroy(&info->pending_lock[i]);
+	}
 	pthread_mutex_destroy(&info->startup_lock);
+
 	free(info->worker_thread);
 
 	return TGTADM_NOMEM;
@@ -397,13 +424,23 @@ int bs_thread_cmd_submit(struct scsi_cmd *cmd)
 	struct scsi_lu *lu = cmd->dev;
 	struct bs_thread_info *info = BS_THREAD_I(lu);
 
-	pthread_mutex_lock(&info->pending_lock);
+	uint64_t segid;
+	int nodeid;
 
-	list_add_tail(&cmd->bs_list, &info->pending_list);
+	segid = offset2segid(cmd->offset, &hc);
+	nodeid = offset2ncid(cmd->offset, &hc);
+	dprintf("numa cache: dispatch segid: %ld to node: %d\n", \
+		segid, nodeid);
 
-	pthread_mutex_unlock(&info->pending_lock);
+	/* numa cache support */
 
-	pthread_cond_signal(&info->pending_cond);
+	pthread_mutex_lock(&info->pending_lock[nodeid]);
+
+	list_add_tail(&cmd->bs_list, &info->pending_list[nodeid]);
+
+	pthread_mutex_unlock(&info->pending_lock[nodeid]);
+
+	pthread_cond_signal(&info->pending_cond[nodeid]);
 
 	set_cmd_async(cmd);
 

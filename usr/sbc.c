@@ -230,6 +230,8 @@ static int sbc_rw(int host_no, struct scsi_cmd *cmd)
 	uint16_t asc = ASC_LUN_NOT_SUPPORTED;
 	struct scsi_lu *lu = cmd->dev;
 
+	dprintf("numa cache: start sbc_rw\n");
+
 	ret = device_reserved(cmd);
 	if (ret)
 		return SAM_STAT_RESERVATION_CONFLICT;
@@ -335,6 +337,7 @@ static int sbc_rw(int host_no, struct scsi_cmd *cmd)
 	cmd->offset = lba << cmd->dev->blk_shift;
 	cmd->tl     = tl  << cmd->dev->blk_shift;
 
+	dprintf("numa cache: submit cmd: lba: %ld\n", lba);
 	ret = cmd->dev->bst->bs_cmd_submit(cmd);
 	if (ret) {
 		key = HARDWARE_ERROR;

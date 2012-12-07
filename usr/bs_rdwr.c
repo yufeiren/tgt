@@ -77,6 +77,7 @@ static void bs_rdwr_request(struct scsi_cmd *cmd)
 	int i;
 	char *ptr;
 	uint64_t lba = 0;
+	int nc_id;
 
 	ret = length = 0;
 	key = asc = 0;
@@ -253,14 +254,23 @@ write:
 		dprintf("numa cache: =================================\n");
 		dprintf("numa cache: start serve an io of read request\n");
 		lba = offset >> cmd->dev->blk_shift;
-		dprintf("numa cache: lba is: %ld, data length is %ld\n", \
-			lba, length);
+		nc_id = offset2ncid(offset, &hc);
+
+		dprintf("numa cache[%d]: lba is: %ld, data length is %ld\n", \
+			nc_id, lba, length);
 
 		/* chech if block in cache */
 		struct cache_block *cb;
-		cb = search_numa_cache(lba, &(hc.nc[0]));
+		cb = search_numa_cache(lba, &(hc.nc[nc_id]));
 		if (cb != NULL) {
-			dprintf("numa cache: hit cache\n");
+			dprintf("numa cache: hit cache %x\n", cb->addr);
+			if (hc.cbs == length) {
+				dprintf("numa cache: hit cache and length match\n");
+				memcpy(scsi_get_in_buffer(cmd), cb->addr, length);
+				dprintf("numa cache: finish serve an io request\n");
+				dprintf("numa cache: --------------------------------\n");
+				break;
+			}
 		} else {
 			dprintf("numa cache: cache not hit\n");
 		}
@@ -279,7 +289,7 @@ write:
 
 		/* cache data */
 		dprintf("numa cache: start cache data\n");
-		update_cache_block(&(hc.nc[0]), lba, \
+		update_cache_block(&(hc.nc[nc_id]), lba, \
 				   scsi_get_in_buffer(cmd));
 		dprintf("numa cache: finish serve an io request\n");
 		dprintf("numa cache: --------------------------------\n");

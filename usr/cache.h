@@ -4,6 +4,7 @@
 
 #include <pthread.h>
 #include <stdio.h>
+#include <string.h>
 #include <inttypes.h>
 #include <sys/types.h>
 #include <numa.h>
@@ -53,8 +54,14 @@ struct numa_cache {
 
 struct host_cache {
 	int numa_nodes;
+	int buffer_size;
+	int cbs;
 	struct numa_cache *nc;
 };
+
+uint64_t offset2segid(uint64_t offset, struct host_cache *hc);
+
+int offset2ncid(uint64_t offset, struct host_cache *hc);
 
 int alloc_nc(struct numa_cache *nc, struct cache_param *cp, int numa_index);
 

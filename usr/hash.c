@@ -12,6 +12,7 @@ struct cache_block *search_numa_cache(uint64_t lba, \
 	struct list_head *pos;
 	struct cache_block *clist;	/* hash table cell list */
 	struct cache_block *cur;
+	struct cache_block *tmp;
 	struct cache_hash_table *ht = &(nc->ht);
 	struct cache_block *hit_head = &(nc->hit_list);
 	int is_found;
@@ -49,8 +50,8 @@ struct cache_block *search_numa_cache(uint64_t lba, \
 		dprintf("numa cache: re-sort hit list\n");
 		sort_hit_list(cur, hit_head);
 
-		list_for_each_entry(cur, &(hit_head->hit_list), hit_list) {
-				dprintf("numa cache: search: lba %ld, hit: %d, addr: %x\n", cur->lba, cur->hit_count, cur->addr);
+		list_for_each_entry(tmp, &(hit_head->hit_list), hit_list) {
+			dprintf("numa cache: search: lba %ld, hit: %d, addr: %x\n", tmp->lba, tmp->hit_count, tmp->addr);
 		}
 	}
 

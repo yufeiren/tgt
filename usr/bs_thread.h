@@ -1,15 +1,20 @@
 typedef void (request_func_t) (struct scsi_cmd *);
 
+#define MAX_NR_NUMA_NODES	32
+
 struct bs_thread_info {
 	pthread_t *worker_thread;
 	int nr_worker_threads;
 
+	int nr_numa_nodes;
+	int thr_node_id;	/* current thread node id for numa */
+
 	/* wokers sleep on this and signaled by tgtd */
-	pthread_cond_t pending_cond;
+	pthread_cond_t pending_cond[MAX_NR_NUMA_NODES];
 	/* locked by tgtd and workers */
-	pthread_mutex_t pending_lock;
+	pthread_mutex_t pending_lock[MAX_NR_NUMA_NODES];
 	/* protected by pending_lock */
-	struct list_head pending_list;
+	struct list_head pending_list[MAX_NR_NUMA_NODES];
 
 	pthread_mutex_t startup_lock;
 
