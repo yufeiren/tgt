@@ -196,3 +196,35 @@ int get_blk_shift(unsigned int size)
 	return shift;
 }
 
+size_t byte_atoi(char *str)
+{
+	double theNum;
+	char suffix = '\0';
+
+	if (str == NULL)
+		return 0;
+
+	/* scan the number and any suffices */
+	sscanf(str, "%lf%c", &theNum, &suffix);
+
+	/* convert according to [Gg Mm Kk] */
+	switch (suffix) {
+	case 'G':
+	case 'g':
+		theNum *= kGiga_to_Unit;
+		break;
+        case 'M':
+        case 'm':
+		theNum *= kMega_to_Unit;
+		break;
+	case 'K':
+	case 'k':
+		theNum *= kKilo_to_Unit;
+		break;
+        default:
+		break;
+	}
+
+	return (size_t) theNum;
+}
+

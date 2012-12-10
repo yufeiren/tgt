@@ -4,6 +4,7 @@
 
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
 #include <sys/types.h>
@@ -17,7 +18,7 @@
 #define CACHE_VALID	1
 
 struct cache_param {
-	long buffer_size;
+	size_t buffer_size;
 	int cbs;
 	char *mem;	/* malloc or shm */
 };
@@ -41,7 +42,7 @@ struct cache_hash_table {
 };
 
 struct numa_cache {
-	int buffer_size;
+	size_t buffer_size;
 	char *buffer;
 	uint32_t cbs;	/* cache block size */
 	int nb;		/* number of cache blocks */
@@ -54,7 +55,7 @@ struct numa_cache {
 
 struct host_cache {
 	int numa_nodes;
-	int buffer_size;
+	size_t buffer_size;
 	int cbs;
 	struct numa_cache *nc;
 };

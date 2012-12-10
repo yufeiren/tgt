@@ -196,9 +196,9 @@ void update_cache_block(struct numa_cache *nc, uint64_t lba, char *data)
 			/* add into hash table */
 			list_add_tail(&(cur->list), &(clist->list));
 
-			list_for_each_entry(cur, &(nc->hit_list.hit_list), hit_list) {
+			/*			list_for_each_entry(cur, &(nc->hit_list.hit_list), hit_list) {
 				dprintf("numa cache: lba %ld, hit: %d, addr: %x\n", cur->lba, cur->hit_count, cur->addr);
-			}
+				}*/
 
 			goto finish;
 		}

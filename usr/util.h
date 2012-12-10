@@ -22,6 +22,10 @@
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 #define ALIGN(x,a) (((x)+(a)-1)&~((a)-1))
 
+#define kKilo_to_Unit	1024
+#define kMega_to_Unit	1024 * 1024
+#define kGiga_to_Unit	1024 * 1024 * 1024
+
 #if __BYTE_ORDER == __LITTLE_ENDIAN
 #define __cpu_to_be16(x) bswap_16(x)
 #define __cpu_to_be32(x) bswap_32(x)
@@ -67,6 +71,8 @@ extern int backed_file_open(char *path, int oflag, uint64_t *size,
 extern int set_non_blocking(int fd);
 extern int str_to_open_flags(char *buf);
 extern char *open_flags_to_str(char *dest, int flags);
+
+extern size_t byte_atoi(char *str);
 
 #define zalloc(size)			\
 ({					\

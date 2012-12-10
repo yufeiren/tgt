@@ -547,17 +547,21 @@ int main(int argc, char **argv)
 			if (ret)
 				bad_optarg(ret, ch, optarg);
 			break;
+		case 's':
+			cp.buffer_size = byte_atoi(optarg);
+			if (cp.buffer_size == 0)
+				bad_optarg(cp.buffer_size, ch, optarg);
+			break;
+		case 'c':
+			cp.cbs = (int) byte_atoi(optarg);
+			if (cp.cbs == 0)
+				bad_optarg(cp.cbs, ch, optarg);
+			break;
 		case 'V':
 			version();
 			break;
 		case 'h':
 			usage(0);
-			break;
-		case 's':
-			cp.buffer_size = atol(optarg);
-			break;
-		case 'c':
-			cp.cbs = atoi(optarg);
 			break;
 		default:
 			if (strncmp(argv[optind - 1], "--", 2))
