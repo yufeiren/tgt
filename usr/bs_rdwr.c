@@ -256,8 +256,8 @@ write:
 		lba = offset >> cmd->dev->blk_shift;
 		nc_id = offset2ncid(offset, &hc);
 
-		dprintf("numa cache[%d]: lba is: %ld, data length is %ld\n", \
-			nc_id, lba, length);
+		dprintf("numa cache[%d]: offset: %ld, lba: %ld, data length: %ld\n", \
+			nc_id, offset, lba, length);
 
 		/* chech if block in cache */
 		struct cache_block *cb;

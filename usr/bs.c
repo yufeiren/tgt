@@ -428,8 +428,8 @@ int bs_thread_cmd_submit(struct scsi_cmd *cmd)
 	int nodeid;
 
 	segid = offset2segid(cmd->offset, &hc);
-	nodeid = offset2ncid(cmd->offset, &hc);
-	dprintf("numa cache: dispatch segid: %ld to node: %d\n", \
+	nodeid = offset2nodeid(cmd->offset, &hc);
+	dprintf("numa cache: dispatch segid: %ld to cache area: %d\n", \
 		segid, nodeid);
 
 	/* numa cache support */

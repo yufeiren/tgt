@@ -42,29 +42,35 @@ struct cache_hash_table {
 };
 
 struct numa_cache {
-	size_t buffer_size;
+	int id;
+	int on_numa_node;	/* numa node this cache located */
+	size_t buffer_size;	/* cache size for this numa cache */
 	char *buffer;
-	uint32_t cbs;	/* cache block size */
-	int nb;		/* number of cache blocks */
+	uint32_t cbs;		/* cache block size */
+	int nb;			/* number of cache blocks */
 	struct cache_block *cb;
-	/* hash table and linked list are used for cache */
+	/* hash table and linked list are used for cache management */
 	struct cache_hash_table ht;
 	struct cache_block unused_list;
 	struct cache_block hit_list;
 };
 
 struct host_cache {
-	int numa_nodes;
-	size_t buffer_size;
-	int cbs;
-	struct numa_cache *nc;
+	int nr_numa_nodes;	/* number of numa nodes */
+	int nr_cache_area;	/* cache area for each numa nodes */
+	size_t buffer_size;	/* cache size of all nodes together */
+	int cbs;		/* cache block size */
+	struct numa_cache *nc;  /* pointer to numa caches */
 };
 
 uint64_t offset2segid(uint64_t offset, struct host_cache *hc);
 
 int offset2ncid(uint64_t offset, struct host_cache *hc);
 
-int alloc_nc(struct numa_cache *nc, struct cache_param *cp, int numa_index);
+int offset2nodeid(uint64_t offset, struct host_cache *hc);
+
+int alloc_nc(struct numa_cache *nc, struct host_cache *hc, \
+	     int numa_index, int cache_id);
 
 int init_cache(struct host_cache *hc, struct cache_param *cp);
 

@@ -6,65 +6,91 @@
 
 uint64_t offset2segid(uint64_t offset, struct host_cache *hc)
 {
-	return (offset / hc->cbs);
+	return (offset / (uint64_t) hc->cbs);
 }
 
 int offset2ncid(uint64_t offset, struct host_cache *hc)
 {
-	return (offset / hc->cbs) % hc->numa_nodes;
+	return (int) (offset / (uint64_t) hc->cbs) % (hc->nr_numa_nodes * hc->nr_cache_area);
+}
+
+int offset2nodeid(uint64_t offset, struct host_cache *hc)
+{
+	return (int) (offset / (uint64_t) hc->cbs) % hc->nr_numa_nodes;
 }
 
 int init_cache(struct host_cache *hc, struct cache_param *cp)
 {
 	int i;
+	int total_nc;
 
 	if (numa_available() != 0) {
 		eprintf("Does not support NUMA API\n");
 		return -1;
 	}
 
-	hc->numa_nodes = numa_num_configured_nodes(); /*numa_max_node();*/
+	hc->nr_numa_nodes = numa_num_configured_nodes();
 	dprintf("numa cache: this host have %d numa nodes in total\n", \
-		hc->numa_nodes);
+		hc->nr_numa_nodes);
 
-	hc->buffer_size = hc->numa_nodes * cp->buffer_size;
+	hc->buffer_size = cp->buffer_size;
 	hc->cbs = cp->cbs;
-	
+	hc->nr_cache_area = 4;
+
+	total_nc = hc->nr_numa_nodes * hc->nr_cache_area;
 	hc->nc = (struct numa_cache *) \
-		malloc(hc->numa_nodes * sizeof(struct numa_cache));
+		malloc(total_nc * sizeof(struct numa_cache));
 	if (hc->nc == NULL) {
 		eprintf("malloc failed\n");
 		return -1;
 	}
 
-	for (i = 0; i < hc->numa_nodes; i ++) {
-		if (alloc_nc(&(hc->nc[i]), cp, i) != 0) {
-			eprintf("alloc numa cache %d failed\n", i);
+	for (i = 0; i < total_nc; i ++) {
+		if (alloc_nc(&(hc->nc[i]), hc, (i / hc->nr_cache_area), i) != 0) {
+			eprintf("alloc numa cache %d on node %d failed\n", \
+				i, i / hc->nr_numa_nodes);
 			return -1;
 		}
-		dprintf("numa cache: alloc cache in node %d success\n", i);
+		dprintf("numa cache: alloc cache[%d] in node %d success\n", \
+			i, i / hc->nr_numa_nodes);
 	}
 
 	return 0;
 }
 
-int alloc_nc(struct numa_cache *nc, struct cache_param *cp, int numa_index)
+int alloc_nc(struct numa_cache *nc, struct host_cache *hc, \
+	     int numa_index, int cache_id)
 {
 	int i;
+	int ret;
+
+	nc->id = cache_id;
 
 	/* alloc cache memory trunk */
-	nc->buffer_size = cp->buffer_size;
+	/* even if we alloc memory by numa_alloc_onnode(), page cache
+	 * is not at this time. So, we call numa_run_onnode() for thread
+	 * and set memory content which will trigger memory allocation.
+	 */
+	ret = numa_run_on_node(numa_index);
+	if (ret == -1) {
+		eprintf("numa cache: numa_run_on_node(%d) failed.\n", \
+			numa_index);
+		return -1;
+	}
+
+	nc->buffer_size = hc->buffer_size / (hc->nr_numa_nodes * hc->nr_cache_area);
 	nc->buffer = (char *) numa_alloc_onnode(nc->buffer_size, numa_index);
 	if (nc->buffer == NULL) {
 		eprintf("numa_alloc_onnode numa_cache buffer failed\n");
 		return -1;
 	}
-	dprintf("numa cache: alloc %ld bytes in numa node %d\n", \
-		nc->buffer_size, numa_index);
+	dprintf("numa cache[%d]: alloc %ld bytes in numa node %d\n", \
+		nc->id, nc->buffer_size, numa_index);
+
+	memset(nc->buffer, '\0', nc->buffer_size);
 
 	/* alloc hash table */
-	nc->cbs = cp->cbs;
-	dprintf("numa cache: cache block size is: %d\n", nc->cbs);
+	nc->cbs = hc->cbs;
 	nc->nb = (int) (nc->buffer_size / nc->cbs);
 	nc->ht.sz = nc->nb;
 	dprintf("numa cache: hash table size is: %d\n", nc->ht.sz);
@@ -105,11 +131,9 @@ int alloc_nc(struct numa_cache *nc, struct cache_param *cp, int numa_index)
 	for (i = 0; i < nc->nb; i ++) {
 		nc->cb[i].is_valid = CACHE_INVALID;
 		nc->cb[i].lba = -1;
-		nc->cb[i].cbs = cp->cbs;
+		nc->cb[i].cbs = hc->cbs;
 		nc->cb[i].hit_count = 0;
-		nc->cb[i].addr = nc->buffer + (uint64_t) i * cp->cbs;
-		dprintf("numa cache: memory block addr %"PRId64 "\n", nc->cb[i].addr);
-		memset((void *)nc->cb[i].addr, '\0', cp->cbs);
+		nc->cb[i].addr = nc->buffer + (uint64_t) i * hc->cbs;
 
 		INIT_LIST_HEAD(&(nc->cb[i].list));
 		INIT_LIST_HEAD(&(nc->cb[i].hit_list));
