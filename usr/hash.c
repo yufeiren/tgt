@@ -12,7 +12,6 @@ struct cache_block *search_numa_cache(uint64_t lba, \
 	struct list_head *pos;
 	struct cache_block *clist;	/* hash table cell list */
 	struct cache_block *cur;
-	struct cache_block *tmp;
 	struct cache_hash_table *ht = &(nc->ht);
 	struct cache_block *hit_head = &(nc->hit_list);
 	int is_found;
@@ -44,15 +43,13 @@ struct cache_block *search_numa_cache(uint64_t lba, \
 		cur->hit_count ++;
 		/* re-sort hash tablecell list */
 		dprintf("numa cache: re-sort hash tablecell\n");
-		sort_tablecell_list(cur, clist);
+		/* sort_tablecell_list(cur, clist); */
 
 		/* re-sort hit list */
 		dprintf("numa cache: re-sort hit list\n");
-		sort_hit_list(cur, hit_head);
+		/* sort_hit_list(cur, hit_head); */
+		lru_hit_list(cur, hit_head);
 
-		list_for_each_entry(tmp, &(hit_head->hit_list), hit_list) {
-			dprintf("numa cache: search: lba %ld, hit: %d, addr: %x\n", tmp->lba, tmp->hit_count, tmp->addr);
-		}
 	}
 
 	cache_hash_table_unlock(ht);
@@ -106,5 +103,12 @@ void sort_hit_list(struct cache_block *cb, struct cache_block *head)
 	pos->next = &(cb->hit_list);
 	cb->hit_list.next->prev = &(cb->hit_list);
 
+	return;
+}
+
+void lru_hit_list(struct cache_block *cb, struct cache_block *head)
+{
+	list_del(&(cb->hit_list));
+	list_add(&(cb->hit_list), &(head->hit_list));
 	return;
 }

@@ -64,6 +64,7 @@ int alloc_nc(struct numa_cache *nc, struct cache_param *cp, int numa_index)
 
 	/* alloc hash table */
 	nc->cbs = cp->cbs;
+	dprintf("numa cache: cache block size is: %d\n", nc->cbs);
 	nc->nb = (int) (nc->buffer_size / nc->cbs);
 	nc->ht.sz = nc->nb;
 	dprintf("numa cache: hash table size is: %d\n", nc->ht.sz);
@@ -106,9 +107,9 @@ int alloc_nc(struct numa_cache *nc, struct cache_param *cp, int numa_index)
 		nc->cb[i].lba = -1;
 		nc->cb[i].cbs = cp->cbs;
 		nc->cb[i].hit_count = 0;
-		nc->cb[i].addr = nc->buffer + i * cp->cbs;
-		dprintf("numa cache: memory block addr %x\n", nc->cb[i].addr);
-		memset(nc->cb[i].addr, '\0', cp->cbs);
+		nc->cb[i].addr = nc->buffer + (uint64_t) i * cp->cbs;
+		dprintf("numa cache: memory block addr %"PRId64 "\n", nc->cb[i].addr);
+		memset((void *)nc->cb[i].addr, '\0', cp->cbs);
 
 		INIT_LIST_HEAD(&(nc->cb[i].list));
 		INIT_LIST_HEAD(&(nc->cb[i].hit_list));
@@ -195,10 +196,6 @@ void update_cache_block(struct numa_cache *nc, uint64_t lba, char *data)
 
 			/* add into hash table */
 			list_add_tail(&(cur->list), &(clist->list));
-
-			/*			list_for_each_entry(cur, &(nc->hit_list.hit_list), hit_list) {
-				dprintf("numa cache: lba %ld, hit: %d, addr: %x\n", cur->lba, cur->hit_count, cur->addr);
-				}*/
 
 			goto finish;
 		}

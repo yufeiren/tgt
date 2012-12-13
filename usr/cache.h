@@ -87,7 +87,11 @@ int ht_hash_key(uint64_t lba, struct cache_hash_table *ht);
 
 void sort_tablecell_list(struct cache_block *cb, struct cache_block *head);
 
+/* consider hit times */
 void sort_hit_list(struct cache_block *cb, struct cache_block *head);
+
+/* pure lru without hit involved */
+void lru_hit_list(struct cache_block *cb, struct cache_block *head);
 
 void update_cache_block(struct numa_cache *nc, uint64_t lba, char *data);
 
