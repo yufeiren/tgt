@@ -76,12 +76,16 @@ static void bs_rdwr_request(struct scsi_cmd *cmd)
 	int do_verify = 0;
 	int i;
 	char *ptr;
-	uint64_t lba = 0;
-	int nc_id;
+
+	struct sub_io_request *ior;
+	struct cache_block *cb;
+	struct numa_cache *nc;
+	int sio_size;
 
 	ret = length = 0;
 	key = asc = 0;
 
+	eprintf("numa cache: cmd is %d\n", cmd->scb[0]);
 	switch (cmd->scb[0])
 	{
 	case ORWRITE_16:
@@ -179,16 +183,31 @@ static void bs_rdwr_request(struct scsi_cmd *cmd)
 	case WRITE_12:
 	case WRITE_16:
 write:
-		length = scsi_get_out_length(cmd);
-		ret = pwrite64(fd, scsi_get_out_buffer(cmd), length,
-			       offset);
-		if (ret == length) {
+		dprintf("numa cache: =================================\n");
+		dprintf("numa cache: start serve an WRITE io request\n");
+
+		for (i = 0; i < cmd->nr_sior; i ++) {
+			dprintf("numa cache: sub request %d\n", i);
+			ior = &(cmd->sior[i]);
+			nc = &(hc.nc[ior->nc_id]);
+
+			nc_mutex_lock(&(nc->mutex));
+
+			/* if block is in cache, invalidate it */
+			invalidate_cache_block(ior->cb_id, nc);
+
+			/* write memory data into disk */
+			dprintf("numa cache: write data: %d bytes\n", \
+				ior->length);
+			ret = pwrite64(fd, scsi_get_out_buffer(cmd) + (uint64_t) ior->m_offset, ior->length, ior->offset + (uint64_t) ior->in_offset);
+			/*
+
+		if (ret == ior->length) {
 			struct mode_pg *pg;
 
-			/*
 			 * it would be better not to access to pg
 			 * directy.
-			 */
+
 			pg = find_mode_page(cmd->dev, 0x08, 0);
 			if (pg == NULL) {
 				result = SAM_STAT_CHECK_CONDITION;
@@ -198,16 +217,24 @@ write:
 			}
 			if (((cmd->scb[0] != WRITE_6) && (cmd->scb[1] & 0x8)) ||
 			    !(pg->mode_data[0] & 0x04))
-				bs_sync_sync_range(cmd, length, &result, &key,
+				bs_sync_sync_range(cmd, ior->length, &result, &key,
 						   &asc);
 		} else
 			set_medium_error(&result, &key, &asc);
 
 		if ((cmd->scb[0] != WRITE_6) && (cmd->scb[1] & 0x10))
-			posix_fadvise(fd, offset, length,
+			posix_fadvise(fd, ior->offset + ior->in_offset, ior->length,
 				      POSIX_FADV_NOREUSE);
-		if (do_verify)
-			goto verify;
+			 */
+		/* if (do_verify)	 do not support yet 
+			goto verify; */
+
+			nc_mutex_unlock(&(nc->mutex));
+		}
+
+		dprintf("numa cache: finish serve an io request\n");
+		dprintf("numa cache: --------------------------------\n");
+
 		break;
 	case WRITE_SAME:
 	case WRITE_SAME_16:
@@ -254,10 +281,6 @@ write:
 		dprintf("numa cache: =================================\n");
 		dprintf("numa cache: start serve an READ io request\n");
 
-		struct sub_io_request *ior;
-		struct cache_block *cb;
-		struct numa_cache *nc;
-		int sio_size;
 		for (i = 0; i < cmd->nr_sior; i ++) {
 			dprintf("numa cache: sub request %d\n", i);
 			ior = &(cmd->sior[i]);

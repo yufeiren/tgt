@@ -13,6 +13,7 @@
 #include "list.h"
 #include "log.h"
 #include "tgtd.h"
+#include "scsi.h"
 
 #define CACHE_INVALID	0
 #define CACHE_VALID	1
@@ -65,11 +66,11 @@ struct host_cache {
 	struct numa_cache *nc;  /* pointer to numa caches */
 };
 
-uint64_t offset2segid(uint64_t offset, struct host_cache *hc);
-
 int offset2ncid(uint64_t offset, struct host_cache *hc);
 
 int offset2nodeid(uint64_t offset, struct host_cache *hc);
+
+int ncid2nodeid(int nc_id, struct host_cache *hc);
 
 int alloc_nc(struct numa_cache *nc, struct host_cache *hc);
 
@@ -84,6 +85,8 @@ struct cache_block *get_cache_block(uint64_t cb_id, \
 				    struct numa_cache *nc);
 
 void insert_cache_block(struct cache_block *cb, struct numa_cache *nc);
+
+void invalidate_cache_block(uint64_t cb_id, struct numa_cache *nc);
 
 /* hash table functions */
 

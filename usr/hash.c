@@ -26,7 +26,6 @@ struct cache_block *get_cache_block(uint64_t cb_id, \
 	is_found = 0;
 	list_for_each_entry(cur, &(clist->list), list) {
 		if (cur->cb_id == cb_id) {
-			cur->hit_count;
 			dprintf("numa cache: hit cache %d times\n", \
 				cur->hit_count);
 			is_found = 1;
@@ -82,6 +81,45 @@ struct cache_block *get_cache_block(uint64_t cb_id, \
 			return cur;
 		}
 	}
+}
+
+void invalidate_cache_block(uint64_t cb_id, struct numa_cache *nc)
+{
+	int key;
+	struct list_head *pos;
+	struct cache_block *clist;	/* hash table cell list */
+	struct cache_block *cur;
+	struct cache_hash_table *ht = &(nc->ht);
+	struct cache_block *hit_head = &(nc->hit_list);
+	int is_found;
+
+	key = ht_hash_key(cb_id, ht);
+	dprintf("numa cache: this io key is %d\n", key);
+
+	clist = &(ht->tablecell[key]);
+
+	/* search */
+	cur = NULL;
+	is_found = 0;
+	list_for_each_entry(cur, &(clist->list), list) {
+		if (cur->cb_id == cb_id) {
+			is_found = 1;
+			break;
+		}
+	}
+
+	if (is_found) {
+		/* move cache block into unused list */
+		dprintf("numa cache: invalidate a cache block\n");
+		list_del(&(cur->list));
+		list_del(&(cur->hit_list));
+
+		cur->is_valid = CACHE_INVALID;
+
+		list_add_tail(&(cur->list), &(nc->unused_list.list));
+	}
+
+	return;
 }
 
 void sort_tablecell_list(struct cache_block *cb, struct cache_block *head)

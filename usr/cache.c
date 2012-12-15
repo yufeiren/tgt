@@ -4,11 +4,6 @@
 
 #include "cache.h"
 
-uint64_t offset2segid(uint64_t offset, struct host_cache *hc)
-{
-	return (offset / (uint64_t) hc->cbs);
-}
-
 int offset2ncid(uint64_t offset, struct host_cache *hc)
 {
 	return (int) (offset / (uint64_t) hc->cbs) % (hc->nr_numa_nodes * hc->nr_cache_area);
@@ -17,6 +12,11 @@ int offset2ncid(uint64_t offset, struct host_cache *hc)
 int offset2nodeid(uint64_t offset, struct host_cache *hc)
 {
 	return (int) (offset / (uint64_t) hc->cbs) % hc->nr_numa_nodes;
+}
+
+int ncid2nodeid(int nc_id, struct host_cache *hc)
+{
+	return nc_id / hc->nr_cache_area;
 }
 
 int init_cache(struct host_cache *hc, struct cache_param *cp)
@@ -50,7 +50,7 @@ int init_cache(struct host_cache *hc, struct cache_param *cp)
 
 	for (i = 0; i < total_nc; i ++) {
 		hc->nc[i].id = i;
-		hc->nc[i].on_numa_node = i / hc->nr_cache_area;
+		hc->nc[i].on_numa_node = ncid2nodeid(i, hc);
 		if (alloc_nc(&(hc->nc[i]), hc) != 0) {
 			eprintf("alloc numa cache %d on node %d failed\n", \
 				i, hc->nc[i].on_numa_node);
@@ -205,12 +205,33 @@ int split_io(struct scsi_cmd *cmd, struct host_cache *hc)
 	uint64_t b_shadow;
 	struct sub_io_request *ior;
 
-	length = scsi_get_in_length(cmd);
+	switch (cmd->scb[0])
+	{
+	case WRITE_6:
+	case WRITE_10:
+	case WRITE_12:
+	case WRITE_16:
+		length = scsi_get_out_length(cmd);
+		break;
+	case READ_6:
+	case READ_10:
+	case READ_12:
+	case READ_16:
+		length = scsi_get_in_length(cmd);
+		break;
+	}
+
 	cmd->nr_sior = 0;
 
-	a_shadow = (uint64_t) (cmd->offset / hc->cbs) * hc->cbs;
-	b_shadow = (uint64_t) (((cmd->offset + length) / hc->cbs) + 1) * hc->cbs;
-	cmd->nr_sior = (b_shadow - a_shadow) / hc->cbs;
+	/* take care of x.999999999  = 1 */
+	a_shadow = (uint64_t) cmd->offset - (cmd->offset % (uint64_t) hc->cbs);
+	b_shadow = (uint64_t) (cmd->offset + (uint64_t) length) - ((cmd->offset + (uint64_t) length) % (uint64_t) hc->cbs) + hc->cbs;
+	cmd->nr_sior = (b_shadow - a_shadow) / (uint64_t) hc->cbs;
+
+	/* fix this !!!!!!!!!!!!!!!!*/
+
+	if(cmd->nr_sior == 2)
+		cmd->nr_sior = 1;
 
 	for (i = 0; i < hc->nr_numa_nodes; i ++)
 		aff[i] = 0;
@@ -223,29 +244,26 @@ int split_io(struct scsi_cmd *cmd, struct host_cache *hc)
 			ior->m_offset = 0;
 			ior->length = length;
 			ior->cb_id = a_shadow / hc->cbs;
-			ior->nc_id = offset2ncid(a_shadow, hc);
 		} else if (i == 0) {		/* first but not last */
 			ior->offset = a_shadow;
 			ior->in_offset = (uint32_t) cmd->offset - a_shadow;
 			ior->m_offset = 0;
 			ior->length = hc->cbs - ior->in_offset;
 			ior->cb_id = a_shadow / hc->cbs;
-			ior->nc_id = offset2ncid(a_shadow, hc);
 		} else if (i == cmd->nr_sior - 1) {	/* last sub io */
 			ior->offset = b_shadow - hc->cbs;
 			ior->in_offset = 0;
 			ior->m_offset = i * hc->cbs  - (cmd->offset - a_shadow);
 			ior->length = hc->cbs - (b_shadow - (cmd->offset + length));
 			ior->cb_id = b_shadow / hc->cbs;
-			ior->nc_id = offset2ncid(b_shadow, hc);
 		} else {			/* middle sub io */
 			ior->offset = a_shadow + (uint64_t) i * hc->cbs;
 			ior->in_offset = 0;
 			ior->m_offset = i * hc->cbs  - (cmd->offset - a_shadow);
 			ior->length = hc->cbs;
 			ior->cb_id = ior->offset / hc->cbs;
-			ior->nc_id = offset2ncid(ior->offset, hc);
 		}
+		ior->nc_id = ncid2nodeid(offset2ncid(ior->offset, hc), hc);
 		dprintf("numa cache: ior[%d] off %ld, in_off %d, len %d, cb_id %ld, nc_id %d\n", \
 			i, ior->offset, ior->in_offset, ior->length, \
 			ior->cb_id, ior->nc_id);
