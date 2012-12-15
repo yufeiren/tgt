@@ -1,6 +1,6 @@
 typedef void (request_func_t) (struct scsi_cmd *);
 
-#define MAX_NR_NUMA_NODES	32
+#define MAX_NR_NUMA_NODES	128
 
 struct bs_thread_info {
 	pthread_t *worker_thread;

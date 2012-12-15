@@ -5,8 +5,8 @@ int ht_hash_key(uint64_t lba, struct cache_hash_table *ht)
 	return (int) (lba % ht->sz);
 }
 
-struct cache_block *search_numa_cache(uint64_t lba, \
-				      struct numa_cache *nc)
+struct cache_block *get_cache_block(uint64_t cb_id, \
+				    struct numa_cache *nc)
 {
 	int key;
 	struct list_head *pos;
@@ -16,19 +16,16 @@ struct cache_block *search_numa_cache(uint64_t lba, \
 	struct cache_block *hit_head = &(nc->hit_list);
 	int is_found;
 
-	key = ht_hash_key(lba, ht);
+	key = ht_hash_key(cb_id, ht);
 	dprintf("numa cache: this io key is %d\n", key);
 
 	clist = &(ht->tablecell[key]);
-
-	/* cache_list_lock(clist); */
-	cache_hash_table_lock(ht);
 
 	/* search */
 	cur = NULL;
 	is_found = 0;
 	list_for_each_entry(cur, &(clist->list), list) {
-		if (cur->lba == lba) {
+		if (cur->cb_id == cb_id) {
 			cur->hit_count;
 			dprintf("numa cache: hit cache %d times\n", \
 				cur->hit_count);
@@ -37,27 +34,54 @@ struct cache_block *search_numa_cache(uint64_t lba, \
 		}
 	}
 
-	/* sort list */
 	if (is_found) {
 		dprintf("numa cache: hit cache in hash table\n");
-		cur->hit_count ++;
-		/* re-sort hash tablecell list */
+		/* cur->hit_count ++; */
+		/* lrure-sort hash tablecell list */
 		dprintf("numa cache: re-sort hash tablecell\n");
 		/* sort_tablecell_list(cur, clist); */
+		lru_tablecell_list(cur, clist);
 
 		/* re-sort hit list */
 		dprintf("numa cache: re-sort hit list\n");
 		/* sort_hit_list(cur, hit_head); */
 		lru_hit_list(cur, hit_head);
 
-	}
-
-	cache_hash_table_unlock(ht);
-
-	if (is_found)
 		return cur;
+	} else {
+		/* admit a cache block */
+		/* check ununsed list */
+		dprintf("numa cache: check unused list\n");
+		if (!list_empty(&(nc->unused_list.list))) {
+			dprintf("numa cache: find a block in unused list\n");
+			cur = list_first_entry(&(nc->unused_list.list), \
+				struct cache_block, list);
+			list_del(&(cur->list));
 
-	return NULL;
+			cur->hit_count = 0;
+			cur->is_valid = CACHE_INVALID;
+
+			return cur;
+		}
+		
+		/* check hit list */
+		dprintf("numa cache: check hit count list\n");
+		if (!list_empty(&(nc->hit_list.hit_list))) {
+			/* get the last item */
+			dprintf("numa cache: LRU replacement: get the last block in hit list\n");
+			pos = nc->hit_list.hit_list.prev;
+			cur = list_entry(pos, struct cache_block, hit_list);
+
+			dprintf("numa cache: delete from hash table\n");
+			/* delete from hash table */
+			list_del(&(cur->list));
+
+			cur->hit_count = 0;
+			cur->is_valid = CACHE_INVALID;
+
+			return cur;
+		}
+	}
 }
 
 void sort_tablecell_list(struct cache_block *cb, struct cache_block *head)
@@ -112,3 +136,11 @@ void lru_hit_list(struct cache_block *cb, struct cache_block *head)
 	list_add(&(cb->hit_list), &(head->hit_list));
 	return;
 }
+
+void lru_tablecell_list(struct cache_block *cb, struct cache_block *head)
+{
+	list_del(&(cb->list));
+	list_add(&(cb->list), &(head->list));
+	return;
+}
+

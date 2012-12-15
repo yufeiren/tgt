@@ -424,13 +424,15 @@ int bs_thread_cmd_submit(struct scsi_cmd *cmd)
 	struct scsi_lu *lu = cmd->dev;
 	struct bs_thread_info *info = BS_THREAD_I(lu);
 
-	uint64_t segid;
 	int nodeid;
 
-	segid = offset2segid(cmd->offset, &hc);
-	nodeid = offset2nodeid(cmd->offset, &hc);
-	dprintf("numa cache: dispatch segid: %ld to cache area: %d\n", \
-		segid, nodeid);
+	/* split io request into sub io request */
+	nodeid = split_io(cmd, &hc);
+
+	/*	segid = offset2segid(cmd->offset, &hc);
+		nodeid = offset2nodeid(cmd->offset, &hc);*/
+	dprintf("numa cache: dispatch offset %ld, length %ld, to numa node: %d\n", \
+		cmd->offset, scsi_get_in_length(cmd), nodeid);
 
 	/* numa cache support */
 

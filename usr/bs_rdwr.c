@@ -250,47 +250,60 @@ write:
 	case READ_10:
 	case READ_12:
 	case READ_16:
-		length = scsi_get_in_length(cmd);
+		/* length = scsi_get_in_length(cmd); */
 		dprintf("numa cache: =================================\n");
-		dprintf("numa cache: start serve an io of read request\n");
-		lba = offset >> cmd->dev->blk_shift;
-		nc_id = offset2ncid(offset, &hc);
+		dprintf("numa cache: start serve an READ io request\n");
 
-		dprintf("numa cache[%d]: offset: %ld, lba: %ld, data length: %ld\n", \
-			nc_id, offset, lba, length);
-
-		/* chech if block in cache */
+		struct sub_io_request *ior;
 		struct cache_block *cb;
-		cb = search_numa_cache(lba, &(hc.nc[nc_id]));
-		if (cb != NULL) {
-			dprintf("numa cache: hit cache %x\n", cb->addr);
-			if (hc.cbs == length) {
-				dprintf("numa cache: hit cache and length match\n");
-				memcpy(scsi_get_in_buffer(cmd), cb->addr, length);
-				dprintf("numa cache: finish serve an io request\n");
-				dprintf("numa cache: --------------------------------\n");
-				break;
+		struct numa_cache *nc;
+		int sio_size;
+		for (i = 0; i < cmd->nr_sior; i ++) {
+			dprintf("numa cache: sub request %d\n", i);
+			ior = &(cmd->sior[i]);
+			nc = &(hc.nc[ior->nc_id]);
+
+			nc_mutex_lock(&(nc->mutex));
+
+			/* chech if block is in cache */
+			cb = get_cache_block(ior->cb_id, nc);
+			if (cb->is_valid == CACHE_VALID) {	/* hit */
+				dprintf("numa cache: cache hit\n");
+				memcpy(scsi_get_in_buffer(cmd) + ior->m_offset, cb->addr + ior->in_offset, ior->length);
+				nc_mutex_unlock(&(nc->mutex));
+				continue;
 			}
-		} else {
+
 			dprintf("numa cache: cache not hit\n");
+			/* not hit */
+			/* load data (cache block) into cache memory */
+			if ((ior->offset + cb->cbs) < cmd->dev->size)
+				sio_size = cb->cbs;
+			else
+				sio_size = cmd->dev->size - ior->offset - (uint64_t) ior->in_offset;
+			dprintf("numa cache: pread data %d bytes offset %ld\n", sio_size, ior->offset);
+			ret = pread64(fd, cb->addr, sio_size, ior->offset);
+			if (ret != cb->cbs)
+				set_medium_error(&result, &key, &asc);
+
+			if ((cmd->scb[0] != READ_6) && (cmd->scb[1] & 0x10))
+				posix_fadvise(fd, ior->offset, ior->length,
+					      POSIX_FADV_NOREUSE);
+
+			/* copy data into memory */
+			dprintf("numa cache: copy data into memory\n");
+			dprintf("numa cache: memcpy %" PRId64 " %" PRId64 " %d\n", scsi_get_in_buffer(cmd) + (uint64_t) ior->m_offset, cb->addr + ((uint64_t) ior->in_offset), ior->length);
+			memcpy(scsi_get_in_buffer(cmd) + (uint64_t) ior->m_offset, cb->addr + ((uint64_t) ior->in_offset), ior->length);
+
+			/* update cb into cache */
+			cb->is_valid = CACHE_VALID;
+			cb->cb_id = ior->cb_id;
+
+			dprintf("numa cache: insert cache block\n");
+			insert_cache_block(cb, nc);
+			nc_mutex_unlock(&(nc->mutex));
 		}
 
-		/* load data from disk */
-		length = scsi_get_in_length(cmd);
-		ret = pread64(fd, scsi_get_in_buffer(cmd), length,
-			      offset);
-
-		if (ret != length)
-			set_medium_error(&result, &key, &asc);
-
-		if ((cmd->scb[0] != READ_6) && (cmd->scb[1] & 0x10))
-			posix_fadvise(fd, offset, length,
-				      POSIX_FADV_NOREUSE);
-
-		/* cache data */
-		dprintf("numa cache: start cache data\n");
-		update_cache_block(&(hc.nc[nc_id]), lba, \
-				   scsi_get_in_buffer(cmd));
 		dprintf("numa cache: finish serve an io request\n");
 		dprintf("numa cache: --------------------------------\n");
 

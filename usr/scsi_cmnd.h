@@ -17,6 +17,16 @@ struct scsi_data_buffer {
 	uint64_t buffer;
 };
 
+struct sub_io_request {
+	uint8_t lun[8];
+	uint64_t offset;	/* global offset */
+	uint32_t in_offset;	/* Task offset in current cache block */
+	uint32_t m_offset;	/* Task offset in the whole task - for memcpy if cache hit */
+	int length;		/* Task Length */
+	uint64_t cb_id;		/* cache block id */
+	int nc_id;		/* NUMA cache id */
+};
+
 struct scsi_cmd {
 	struct target *c_target;
 	/* linked it_nexus->cmd_hash_list */
@@ -42,6 +52,8 @@ struct scsi_cmd {
 	uint64_t tag;
 	int result;
 	struct mgmt_req *mreq;
+	int nr_sior;
+	struct sub_io_request sior[1024];
 
 	unsigned char sense_buffer[SCSI_SENSE_BUFFERSIZE];
 	int sense_len;

@@ -23,16 +23,15 @@ struct cache_param {
 	char *mem;	/* malloc or shm */
 };
 
-
 struct cache_block {
 	int is_valid;
-	uint64_t lba;	/* logical block address */
-	uint32_t cbs;	/* cache block size */
-	int hit_count;	/* times of cache hit */
+	uint64_t cb_id;		/* cache block id */
+	uint32_t cbs;		/* cache block size */
+	int hit_count;		/* times of cache hit */
 	char *addr;
 	pthread_mutex_t lock;
 	struct list_head list; /* a block either in hash table or in unused list*/
-	struct list_head hit_list;	/* hit count list - deascending */
+	struct list_head hit_list;	/* hit count list - lru */
 };
 
 struct cache_hash_table {
@@ -53,6 +52,8 @@ struct numa_cache {
 	struct cache_hash_table ht;
 	struct cache_block unused_list;
 	struct cache_block hit_list;
+
+	pthread_mutex_t mutex;
 };
 
 struct host_cache {
@@ -74,16 +75,15 @@ int alloc_nc(struct numa_cache *nc, struct host_cache *hc, \
 
 int init_cache(struct host_cache *hc, struct cache_param *cp);
 
-int cache_list_lock_init(struct cache_block *cb);
-int cache_list_lock(struct cache_block *cb);
-int cache_list_unlock(struct cache_block *cb);
+int nc_mutex_init(pthread_mutex_t *mutex);
+int nc_mutex_lock(pthread_mutex_t *mutex);
+int nc_mutex_unlock(pthread_mutex_t *mutex);
 
-int cache_hash_table_lock_init(struct cache_hash_table *ht);
-int cache_hash_table_lock(struct cache_hash_table *ht);
-int cache_hash_table_unlock(struct cache_hash_table *ht);
+/* cache replacement */
+struct cache_block *get_cache_block(uint64_t cb_id, \
+				    struct numa_cache *nc);
 
-struct cache_block *search_numa_cache(uint64_t lba, \
-				      struct numa_cache *nc);
+void insert_cache_block(struct cache_block *cb, struct numa_cache *nc);
 
 /* hash table functions */
 
@@ -97,9 +97,15 @@ void sort_tablecell_list(struct cache_block *cb, struct cache_block *head);
 void sort_hit_list(struct cache_block *cb, struct cache_block *head);
 
 /* pure lru without hit involved */
+void lru_tablecell_list(struct cache_block *cb, struct cache_block *head);
+
 void lru_hit_list(struct cache_block *cb, struct cache_block *head);
 
-void update_cache_block(struct numa_cache *nc, uint64_t lba, char *data);
 
 
+
+/* split io-request into sub-tasks
+ * return value is a numa node id
+ */
+int split_io(struct scsi_cmd *cmd, struct host_cache *hc);
 
