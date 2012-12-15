@@ -35,7 +35,7 @@ int init_cache(struct host_cache *hc, struct cache_param *cp)
 
 	hc->buffer_size = cp->buffer_size;
 	hc->cbs = cp->cbs;
-	hc->nr_cache_area = 4;
+	hc->nr_cache_area = cp->cache_way;
 
 	total_nc = hc->nr_numa_nodes * hc->nr_cache_area;
 	hc->nc = (struct numa_cache *) \
@@ -46,7 +46,9 @@ int init_cache(struct host_cache *hc, struct cache_param *cp)
 	}
 
 	for (i = 0; i < total_nc; i ++) {
-		if (alloc_nc(&(hc->nc[i]), hc, (i / hc->nr_cache_area), i) != 0) {
+		hc->nc[i].id = i;
+		hc->nc[i].on_numa_node = i / hc->nr_cache_area;
+		if (alloc_nc(&(hc->nc[i]), hc) != 0) {
 			eprintf("alloc numa cache %d on node %d failed\n", \
 				i, i / hc->nr_numa_nodes);
 			return -1;
@@ -58,13 +60,10 @@ int init_cache(struct host_cache *hc, struct cache_param *cp)
 	return 0;
 }
 
-int alloc_nc(struct numa_cache *nc, struct host_cache *hc, \
-	     int numa_index, int cache_id)
+int alloc_nc(struct numa_cache *nc, struct host_cache *hc)
 {
 	int i;
 	int ret;
-
-	nc->id = cache_id;
 
 	nc_mutex_init(&(nc->mutex));
 
@@ -73,21 +72,21 @@ int alloc_nc(struct numa_cache *nc, struct host_cache *hc, \
 	 * is not at this time. So, we call numa_run_onnode() for thread
 	 * and set memory content which will trigger memory allocation.
 	 */
-	ret = numa_run_on_node(numa_index);
+	ret = numa_run_on_node(nc->on_numa_node);
 	if (ret == -1) {
 		eprintf("numa cache: numa_run_on_node(%d) failed.\n", \
-			numa_index);
+			nc->on_numa_node);
 		return -1;
 	}
 
 	nc->buffer_size = hc->buffer_size / (hc->nr_numa_nodes * hc->nr_cache_area);
-	nc->buffer = (char *) numa_alloc_onnode(nc->buffer_size, numa_index);
+	nc->buffer = (char *) numa_alloc_onnode(nc->buffer_size, nc->on_numa_node);
 	if (nc->buffer == NULL) {
 		eprintf("numa_alloc_onnode numa_cache buffer failed\n");
 		return -1;
 	}
 	dprintf("numa cache[%d]: alloc %ld bytes in numa node %d\n", \
-		nc->id, nc->buffer_size, numa_index);
+		nc->id, nc->buffer_size, nc->on_numa_node);
 
 	memset(nc->buffer, '\0', nc->buffer_size);
 
@@ -98,7 +97,7 @@ int alloc_nc(struct numa_cache *nc, struct host_cache *hc, \
 	dprintf("numa cache: hash table size is: %d\n", nc->ht.sz);
 	nc->ht.tablecell = (struct cache_block *) \
 		numa_alloc_onnode(nc->ht.sz * sizeof(struct cache_block), \
-			numa_index);
+				  nc->on_numa_node);
 	if (nc->ht.tablecell == NULL) {
 		eprintf("numa_alloc_onnode hash table failed\n");
 		return -1;
@@ -119,7 +118,7 @@ int alloc_nc(struct numa_cache *nc, struct host_cache *hc, \
 	/* alloc cache blocks info */
 	nc->cb = (struct cache_block *) \
 		numa_alloc_onnode(nc->nb * sizeof(struct cache_block), \
-			numa_index);
+				  nc->on_numa_node);
 	if (nc->cb == NULL) {
 		eprintf("numa_alloc_onnode cache blocks failed\n");
 		return -1;
@@ -181,6 +180,7 @@ int nc_mutex_unlock(pthread_mutex_t *mutex)
 	return 0;
 }
 
+/* return most affinitied node */
 int split_io(struct scsi_cmd *cmd, struct host_cache *hc)
 {
 	/* V is in request data (each V is a logic block)
@@ -195,6 +195,8 @@ int split_io(struct scsi_cmd *cmd, struct host_cache *hc)
 
 	int i;
 	int nodeid;
+	int aff[32];
+	int aff_max;
 	uint32_t length;
 	uint64_t a_shadow;
 	uint64_t b_shadow;
@@ -206,6 +208,9 @@ int split_io(struct scsi_cmd *cmd, struct host_cache *hc)
 	a_shadow = (uint64_t) (cmd->offset / hc->cbs) * hc->cbs;
 	b_shadow = (uint64_t) (((cmd->offset + length) / hc->cbs) + 1) * hc->cbs;
 	cmd->nr_sior = (b_shadow - a_shadow) / hc->cbs;
+
+	for (i = 0; i < hc->nr_numa_nodes; i ++)
+		aff[i] = 0;
 
 	for (i = 0; i < cmd->nr_sior; i ++) {
 		ior = &(cmd->sior[i]);
@@ -241,9 +246,18 @@ int split_io(struct scsi_cmd *cmd, struct host_cache *hc)
 		dprintf("numa cache: ior[%d] off %ld, in_off %d, len %d, cb_id %ld, nc_id %d\n", \
 			i, ior->offset, ior->in_offset, ior->length, \
 			ior->cb_id, ior->nc_id);
+
+		aff[ior->nc_id] ++;
 	}
 
 	nodeid = 0;
+	aff_max = aff[0];
+	for (i = 1; i < hc->nr_numa_nodes; i ++) {
+		if (aff[i] > aff_max) {
+			nodeid = i;
+			aff_max = aff[i];
+		}
+	}
 
 	return nodeid;
 }

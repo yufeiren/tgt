@@ -20,6 +20,7 @@
 struct cache_param {
 	size_t buffer_size;
 	int cbs;
+	int cache_way;	/* # of caches per node */
 	char *mem;	/* malloc or shm */
 };
 
@@ -70,8 +71,7 @@ int offset2ncid(uint64_t offset, struct host_cache *hc);
 
 int offset2nodeid(uint64_t offset, struct host_cache *hc);
 
-int alloc_nc(struct numa_cache *nc, struct host_cache *hc, \
-	     int numa_index, int cache_id);
+int alloc_nc(struct numa_cache *nc, struct host_cache *hc);
 
 int init_cache(struct host_cache *hc, struct cache_param *cp);
 

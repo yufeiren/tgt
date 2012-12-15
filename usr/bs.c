@@ -429,8 +429,6 @@ int bs_thread_cmd_submit(struct scsi_cmd *cmd)
 	/* split io request into sub io request */
 	nodeid = split_io(cmd, &hc);
 
-	/*	segid = offset2segid(cmd->offset, &hc);
-		nodeid = offset2nodeid(cmd->offset, &hc);*/
 	dprintf("numa cache: dispatch offset %ld, length %ld, to numa node: %d\n", \
 		cmd->offset, scsi_get_in_length(cmd), nodeid);
 

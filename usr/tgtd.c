@@ -61,10 +61,11 @@ static struct option const long_options[] = {
 	{"help", no_argument, 0, 'h'},
 	{"cache_size", required_argument, 0, 's'},
 	{"cache_bs", required_argument, 0, 'c'},
+	{"cache_way", required_argument, 0, 'w'},
 	{0, 0, 0, 0},
 };
 
-static char *short_options = "fC:d:t:Vhs:c:";
+static char *short_options = "fC:d:t:Vhs:c:w:";
 static char *spare_args;
 
 static void usage(int status)
@@ -82,6 +83,7 @@ static void usage(int status)
 		"-t, --nr_iothreads NNNN specify the number of I/O threads\n"
 		"-s, --cache_size NNNN   specify the size of numa-aware cache for each numa node\n"
 		"-c, --cache_bs NNNN     specify the size of cache block\n"
+		"-w, --cache-way NNNN    specify number of numa cache per node\n"
 		"-d, --debug debuglevel  print debugging information\n"
 		"-V, --version           print version and exit\n"
 		"-h, --help              display this help and exit\n",
@@ -557,6 +559,11 @@ int main(int argc, char **argv)
 			if (cp.cbs == 0)
 				bad_optarg(cp.cbs, ch, optarg);
 			break;
+		case 'w':
+			cp.cache_way = atoi(optarg);
+			if (cp.cache_way == 0)
+				bad_optarg(cp.cache_way, ch, optarg);
+			break;
 		case 'V':
 			version();
 			break;
@@ -614,7 +621,6 @@ int main(int argc, char **argv)
 
 	bs_init();
 
-	dprintf("numa cache: init hc addr is %x\n", &hc);
 	init_cache(&hc, &cp);
 
 	event_loop();
