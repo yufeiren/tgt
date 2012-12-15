@@ -30,12 +30,15 @@ int init_cache(struct host_cache *hc, struct cache_param *cp)
 	}
 
 	hc->nr_numa_nodes = numa_num_configured_nodes();
-	dprintf("numa cache: this host have %d numa nodes in total\n", \
+	eprintf("numa cache: this host have %d numa nodes in total\n", \
 		hc->nr_numa_nodes);
 
 	hc->buffer_size = cp->buffer_size;
 	hc->cbs = cp->cbs;
-	hc->nr_cache_area = cp->cache_way;
+	if (cp->cache_way == 0)
+		hc->nr_cache_area = 1;
+	else
+		hc->nr_cache_area = cp->cache_way;
 
 	total_nc = hc->nr_numa_nodes * hc->nr_cache_area;
 	hc->nc = (struct numa_cache *) \
@@ -50,11 +53,11 @@ int init_cache(struct host_cache *hc, struct cache_param *cp)
 		hc->nc[i].on_numa_node = i / hc->nr_cache_area;
 		if (alloc_nc(&(hc->nc[i]), hc) != 0) {
 			eprintf("alloc numa cache %d on node %d failed\n", \
-				i, i / hc->nr_numa_nodes);
+				i, hc->nc[i].on_numa_node);
 			return -1;
 		}
-		dprintf("numa cache: alloc cache[%d] in node %d success\n", \
-			i, i / hc->nr_numa_nodes);
+		eprintf("numa cache: alloc cache[%d] in node %d success\n", \
+			i, hc->nc[i].on_numa_node);
 	}
 
 	return 0;
