@@ -225,13 +225,8 @@ int split_io(struct scsi_cmd *cmd, struct host_cache *hc)
 
 	/* take care of x.999999999  = 1 */
 	a_shadow = (uint64_t) cmd->offset - (cmd->offset % (uint64_t) hc->cbs);
-	b_shadow = (uint64_t) (cmd->offset + (uint64_t) length) - ((cmd->offset + (uint64_t) length) % (uint64_t) hc->cbs) + hc->cbs;
+	b_shadow = (uint64_t) (cmd->offset + (uint64_t) length - 1) - ((cmd->offset + (uint64_t) length - 1) % (uint64_t) hc->cbs) + hc->cbs;
 	cmd->nr_sior = (b_shadow - a_shadow) / (uint64_t) hc->cbs;
-
-	/* fix this !!!!!!!!!!!!!!!!*/
-
-	if(cmd->nr_sior == 2)
-		cmd->nr_sior = 1;
 
 	for (i = 0; i < hc->nr_numa_nodes; i ++)
 		aff[i] = 0;
