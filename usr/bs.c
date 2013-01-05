@@ -428,7 +428,7 @@ int bs_thread_cmd_submit(struct scsi_cmd *cmd)
 
 	/* split io request into sub io request */
 	nodeid = split_io(cmd, &hc);
-	eprintf("numa cache: dispatch cmd to node %d\n", nodeid);
+	dprintf("numa cache: dispatch cmd to node %d\n", nodeid);
 	dprintf("numa cache: dispatch offset %ld, to numa node: %d\n", \
 		cmd->offset, nodeid);
 

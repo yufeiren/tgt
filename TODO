@@ -1,0 +1,5 @@
+1. write invalidate support
+2. multiple LUN support
+3. Asymantic system (Nodes have different systems)
+4. Cache refill when write IO request issues.
+

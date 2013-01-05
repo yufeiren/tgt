@@ -85,7 +85,7 @@ static void bs_rdwr_request(struct scsi_cmd *cmd)
 	ret = length = 0;
 	key = asc = 0;
 
-	eprintf("numa cache: cmd is %d\n", cmd->scb[0]);
+	dprintf("numa cache: cmd is %d\n", cmd->scb[0]);
 	switch (cmd->scb[0])
 	{
 	case ORWRITE_16:
