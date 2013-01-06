@@ -258,12 +258,12 @@ int split_io(struct scsi_cmd *cmd, struct host_cache *hc)
 			ior->length = hc->cbs;
 			ior->cb_id = ior->offset / hc->cbs;
 		}
-		ior->nc_id = ncid2nodeid(offset2ncid(ior->offset, hc), hc);
+		ior->nc_id = offset2ncid(ior->offset, hc);
 		dprintf("numa cache: ior[%d] off %ld, in_off %d, len %d, cb_id %ld, nc_id %d\n", \
 			i, ior->offset, ior->in_offset, ior->length, \
 			ior->cb_id, ior->nc_id);
 
-		aff[ior->nc_id] ++;
+		aff[ncid2nodeid(ior->nc_id, hc)] ++;
 	}
 
 	nodeid = 0;
