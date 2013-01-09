@@ -58,6 +58,8 @@ struct scsi_cmd {
 	unsigned char sense_buffer[SCSI_SENSE_BUFFERSIZE];
 	int sense_len;
 
+	int nodeid;	/* for numa node id */
+
 	struct list_head bs_list;
 
 	struct it_nexus *it_nexus;

@@ -42,12 +42,15 @@
 #include "driver.h"
 #include "scsi.h"
 #include "work.h"
+#include "cache.h"
 
 #if defined(HAVE_VALGRIND) && !defined(NDEBUG)
 #include <valgrind/memcheck.h>
 #else
 #define VALGRIND_MAKE_MEM_DEFINED(addr, len)
 #endif
+
+extern struct host_cache hc;
 
 static struct iscsi_transport iscsi_iser;
 
@@ -82,7 +85,7 @@ char *iser_portal_addr;
 
 #define MAX_POLL_WC 32
 
-#define DEFAULT_POOL_SIZE_MB    1024
+#define DEFAULT_POOL_SIZE_MB    256
 #define ISER_MAX_QUEUE_CMD      128     /* iSCSI cmd window size */
 #define MAX_CQ_ENTRIES          (128 * 1024)
 
@@ -269,12 +272,21 @@ static void iser_rdmad_init(struct iser_work_req *rdmad,
 	INIT_LIST_HEAD(&rdmad->wr_list);
 }
 
+static void iser_rdmad_init_numa(struct iser_work_req *rdmad,
+				 struct iser_task *task,
+				 struct ibv_mr *srmr,
+				 int numa_node)
+{
+	rdmad->numa_sge[numa_node].lkey = srmr->lkey;
+}
+
 static void iser_task_init(struct iser_task *task,
 			   struct iser_conn *conn,
 			   void *pdu_buf,
 			   unsigned long buf_size,
 			   struct ibv_mr *srmr)
 {
+	int i;
 	task->conn = conn;
 	task->unsolicited = 0;
 
@@ -283,6 +295,9 @@ static void iser_task_init(struct iser_task *task,
 	iser_rxd_init(&task->rxd, task, pdu_buf, buf_size, srmr);
 	iser_txd_init(&task->txd, task, pdu_buf, buf_size, srmr);
 	iser_rdmad_init(&task->rdmad, task, conn->dev->membuf_mr);
+	for (i = 0; i < hc.nr_numa_nodes; i ++) {
+		iser_rdmad_init_numa(&task->rdmad, task, conn->dev->numa_membuf_mr[i], i);
+	}
 
 	INIT_LIST_HEAD(&task->in_buf_list);
 	INIT_LIST_HEAD(&task->out_buf_list);
@@ -414,6 +429,13 @@ static void iser_prep_rdma_wr_send_req(struct iser_task *task,
 	/* ToDo: multiple RDMA-Write buffers, use rdma_buf->offset */
 	rdma_buf = list_first_entry(&task->in_buf_list, struct iser_membuf, task_list);
 	rdmad->sge.addr = uint64_from_ptr(rdma_buf->addr);
+
+	if (task->is_read || task->is_write) {
+		dprintf("numa cache: change addr to numa node %d\n", rdma_buf->cur_node);
+		rdmad->sge.addr = uint64_from_ptr(rdma_buf->numa_addr[rdma_buf->cur_node]);
+	/* update lkey for numa-aware */
+		rdmad->sge.lkey = rdmad->numa_sge[rdma_buf->cur_node].lkey;
+	}
 
 	if (likely(task->rdma_wr_remains <= rdma_buf->size)) {
 		rdmad->sge.length = task->rdma_wr_remains;
@@ -614,7 +636,8 @@ static int iser_init_rdma_buf_pool(struct iser_device *dev)
 	size_t pool_size, list_size;
 	struct iser_membuf *rdma_buf;
 	int shmid;
-	int i;
+	int i, j;
+	int ret;
 
 	/* The membuf size is rounded up at initialization time to the hardware
 	   page size so that allocations for direct IO devices are aligned. */
@@ -653,6 +676,57 @@ static int iser_init_rdma_buf_pool(struct iser_device *dev)
 	dev->membuf_listbuf = list_buf;
 	INIT_LIST_HEAD(&dev->membuf_free);
 	INIT_LIST_HEAD(&dev->membuf_alloc);
+	/*
+	for (i = 0; i < membuf_num; i++) {
+		rdma_buf = (void *) list_buf;
+		list_buf += sizeof(*rdma_buf);
+
+		list_add_tail(&rdma_buf->pool_list, &dev->membuf_free);
+		INIT_LIST_HEAD(&rdma_buf->task_list);
+		rdma_buf->addr = pool_buf;
+		rdma_buf->size = membuf_size;
+		rdma_buf->rdma = 1;
+
+		pool_buf += membuf_size;
+	}
+	*/
+
+	/* each numa node alloc pool_size memory */
+	for (i = 0; i < hc.nr_numa_nodes; i ++) {
+		/* set up run on node */
+		ret = numa_run_on_node(i);
+		if (ret == -1) {
+			eprintf("numa cache: numa_run_on_node(%d) failed.\n", \
+				i);
+			return -1;
+		}
+
+		/* alloc memory */
+		dev->numa_membuf_regbuf[i] = (char *) numa_alloc_onnode(pool_size, i);
+		if (dev->numa_membuf_regbuf[i] == NULL) {
+			eprintf("numa_alloc_onnode numa_cache buffer failed\n");
+			return -1;
+		}
+
+		memset(dev->numa_membuf_regbuf[i], '\0', pool_size);
+
+		/* register memory */
+		dev->numa_membuf_mr[i] = ibv_reg_mr(dev->pd,
+						    dev->numa_membuf_regbuf[i],
+						    pool_size,
+						    IBV_ACCESS_LOCAL_WRITE);
+		if (!dev->numa_membuf_mr[i]) {
+			eprintf("ibv_reg_mr numa memory failed, %m\n");
+			numa_free(dev->numa_membuf_regbuf[i], pool_size);
+			return -1;
+		}
+
+		dprintf("numa net buf[%d]:%p list:%p mr:%p lkey:0x%x\n",
+			i, dev->numa_membuf_regbuf[i], list_buf,
+			dev->numa_membuf_mr[i],
+			dev->numa_membuf_mr[i]->lkey);
+
+	}
 
 	for (i = 0; i < membuf_num; i++) {
 		rdma_buf = (void *) list_buf;
@@ -660,6 +734,11 @@ static int iser_init_rdma_buf_pool(struct iser_device *dev)
 
 		list_add_tail(&rdma_buf->pool_list, &dev->membuf_free);
 		INIT_LIST_HEAD(&rdma_buf->task_list);
+
+		for (j = 0; j < hc.nr_numa_nodes; j ++) {
+			rdma_buf->numa_addr[j] = dev->numa_membuf_regbuf[j] + membuf_size * i;
+		}
+
 		rdma_buf->addr = pool_buf;
 		rdma_buf->size = membuf_size;
 		rdma_buf->rdma = 1;
@@ -1992,6 +2071,10 @@ static void iser_scsi_cmd_iosubmit(struct iser_task *task, int not_last)
 	struct iser_conn *conn = task->conn;
 	struct iscsi_session *session = conn->h.session;
 	struct iser_membuf *data_buf;
+	uint64_t lba;
+	int nodeid;
+
+	dprintf("numa cache: start iser_scsi_cmd_iosubmit\n");
 
 	scmd->state = 0;
 	if (not_last)
@@ -2040,6 +2123,61 @@ static void iser_scsi_cmd_iosubmit(struct iser_task *task, int not_last)
 	scmd->result = 0;
 	scmd->mreq = NULL;
 	scmd->sense_len = 0;
+
+	/* parse cmd to which numa node */
+	dprintf("numa cache: start parse numa node\n");
+
+	/* find dev */
+	if (task->is_read || task->is_write) {
+	struct target *target;
+	struct it_nexus *itn;
+	uint64_t dev_id, itn_id = scmd->cmd_itn_id;
+
+	itn = it_nexus_lookup(session->target->tid, itn_id);
+	if (!itn) {
+		eprintf("invalid nexus %d %" PRIx64 "\n", session->target->tid, itn_id);
+		return;
+	}
+
+	scmd->c_target = target = itn->nexus_target;
+	scmd->it_nexus = itn;
+
+	dev_id = scsi_get_devid(target->lid, scmd->lun);
+	scmd->dev_id = dev_id;
+	dprintf("%p %x %" PRIx64 "\n", scmd, scmd->scb[0], dev_id);
+
+	/*	scmd->dev = device_lookup(target, dev_id);*/
+	struct scsi_lu *lu;
+
+	list_for_each_entry(lu, &target->device_list, device_siblings)
+		if (lu->lun == dev_id)
+			scmd->dev = lu;
+	/* use LUN0 */
+	if (!scmd->dev)
+		scmd->dev = list_first_entry(&target->device_list,
+					     struct scsi_lu,
+					     device_siblings);
+	/*it_nexus_lu_info_lookup*/
+
+	lba = scsi_rw_offset(scmd->scb);
+	dprintf("numa cache: start parse numa node 2\n");
+	scmd->offset = lba << scmd->dev->blk_shift;
+	dprintf("numa cache: start parse numa node split io\n");
+	data_buf->cur_node = split_io(scmd, &hc);
+	scmd->nodeid = data_buf->cur_node;
+	dprintf("numa cache: parse this task to node %d\n",
+		data_buf->cur_node);
+	dprintf("numa cache: update network buf address\n");
+
+	data_buf->addr = data_buf->numa_addr[data_buf->cur_node];
+	if (task->is_write) {
+		scsi_set_out_buffer(scmd, data_buf->addr);
+	}
+	if (task->is_read) {
+		scsi_set_in_buffer(scmd, data_buf->addr);
+	}
+
+	}
 
 	dprintf("task:%p tag:0x%04"PRIx64 "\n", task, task->tag);
 
@@ -2401,7 +2539,6 @@ static int iser_scsi_cmd_rx(struct iser_task *task)
 	uint32_t xfer_sz = ntohl(req_bhs->data_length);
 	int err = 0;
 	uint64_t lba;
-	uint64_t segid;	/* segment id */
 
 	task->is_read = flags & ISCSI_FLAG_CMD_READ;
 	task->is_write = flags & ISCSI_FLAG_CMD_WRITE;
@@ -2477,13 +2614,7 @@ static int iser_scsi_cmd_rx(struct iser_task *task)
 
 	/* get lba and schedule */
 	lba = scsi_rw_offset(req_bhs->cdb);
-	dprintf("this lba is: %ld\n", lba);
-
-	/* get segment id according to lba
-	segid = (lba << ) / cbs;
-	dprintf("segment id is: %d\n", lba); */
-
-	/* dispatch task to specified node */
+	dprintf("numa cache: this lba is: %ld\n", lba);
 
 	list_add_tail(&task->session_list, &session->cmd_list);
 out:

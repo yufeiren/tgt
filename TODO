@@ -2,5 +2,9 @@
 2. multiple LUN support
 3. Asymantic system (Nodes have different systems)
 4. Cache refill when write IO request issues.
-5. memcpy(src, dst). dst memory location improvement.
-
+5. memcpy(src, dst). dst memory location improvement. - done
+6. numa_run_on_node should be happened before numa_alloc_onnode, otherwise
+numa_alloc_onnode would take no effect. bug this bug to community.
+7. numa_run_on_node to default node.
+8. free numa network buffer when the connection is freed
+9. reduce large memory management overhead

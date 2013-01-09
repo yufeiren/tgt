@@ -219,10 +219,16 @@ int split_io(struct scsi_cmd *cmd, struct host_cache *hc)
 	case READ_16:
 		length = scsi_get_in_length(cmd);
 		break;
+	default:
+		dprintf("numa cache: command not support 0x%x\n", \
+			cmd->scb[0]);
+		return 0;
+		break;
 	}
 
 	cmd->nr_sior = 0;
 
+	dprintf("numa cache: after switch\n");
 	/* take care of x.999999999  = 1 */
 	a_shadow = (uint64_t) cmd->offset - (cmd->offset % (uint64_t) hc->cbs);
 	b_shadow = (uint64_t) (cmd->offset + (uint64_t) length - 1) - ((cmd->offset + (uint64_t) length - 1) % (uint64_t) hc->cbs) + hc->cbs;

@@ -24,6 +24,7 @@
 #define ISER_H
 
 #include "iscsid.h"
+#include "bs_thread.h"
 
 /*
  * The IB-extended version from the kernel.  Stags and VAs are in
@@ -67,6 +68,7 @@ struct iser_work_req {
 	struct iser_task *task;
 	enum iser_ib_op_code iser_ib_op;
 	struct ibv_sge sge;
+	struct ibv_sge numa_sge[MAX_NR_NUMA_NODES];
 	union {
 		struct ibv_recv_wr recv_wr;
 		struct ibv_send_wr send_wr;
@@ -80,6 +82,8 @@ struct iser_work_req {
  */
 struct iser_membuf {
 	void *addr;
+	int cur_node;
+	void *numa_addr[MAX_NR_NUMA_NODES];
 	unsigned size;
 	unsigned offset; /* offset within task data */
 	struct list_head task_list;
@@ -250,6 +254,8 @@ struct iser_device {
 	void *membuf_regbuf;
 	void *membuf_listbuf;
 	struct ibv_mr *membuf_mr;
+	void *numa_membuf_regbuf[MAX_NR_NUMA_NODES];
+	struct ibv_mr *numa_membuf_mr[MAX_NR_NUMA_NODES];
 	int waiting_for_mem;
 
 	/* shared memory identifier */
