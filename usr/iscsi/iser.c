@@ -691,6 +691,8 @@ static int iser_init_rdma_buf_pool(struct iser_device *dev)
 	}
 	*/
 
+	struct bitmask *nodemask;
+	nodemask = numa_get_run_node_mask();
 	/* each numa node alloc pool_size memory */
 	for (i = 0; i < hc.nr_numa_nodes; i ++) {
 		/* set up run on node */
@@ -727,6 +729,8 @@ static int iser_init_rdma_buf_pool(struct iser_device *dev)
 			dev->numa_membuf_mr[i]->lkey);
 
 	}
+
+	numa_run_on_node_mask(nodemask);
 
 	for (i = 0; i < membuf_num; i++) {
 		rdma_buf = (void *) list_buf;

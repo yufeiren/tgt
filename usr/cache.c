@@ -48,6 +48,9 @@ int init_cache(struct host_cache *hc, struct cache_param *cp)
 		return -1;
 	}
 
+	struct bitmask *nodemask;
+	nodemask = numa_get_run_node_mask();
+
 	for (i = 0; i < total_nc; i ++) {
 		hc->nc[i].id = i;
 		hc->nc[i].on_numa_node = ncid2nodeid(i, hc);
@@ -59,6 +62,8 @@ int init_cache(struct host_cache *hc, struct cache_param *cp)
 		eprintf("numa cache: alloc cache[%d] in node %d success\n", \
 			i, hc->nc[i].on_numa_node);
 	}
+
+	numa_run_on_node_mask(nodemask);
 
 	return 0;
 }
