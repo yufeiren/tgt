@@ -19,6 +19,8 @@ struct scsi_data_buffer {
 
 struct sub_io_request {
 	uint8_t lun[8];
+	uint64_t itn_id;
+	uint64_t dev_id;
 	uint64_t offset;	/* global offset */
 	uint32_t in_offset;	/* Task offset in current cache block */
 	uint32_t m_offset;	/* Task offset in the whole task - for memcpy if cache hit */

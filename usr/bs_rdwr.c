@@ -194,7 +194,8 @@ write:
 			nc_mutex_lock(&(nc->mutex));
 
 			/* if block is in cache, invalidate it */
-			invalidate_cache_block(ior->cb_id, nc);
+			invalidate_cache_block(ior->itn_id, ior->dev_id, \
+					       ior->cb_id, nc);
 
 			/* write memory data into disk */
 			dprintf("numa cache: write data: %d bytes\n", \
@@ -289,7 +290,8 @@ write:
 			nc_mutex_lock(&(nc->mutex));
 
 			/* chech if block is in cache */
-			cb = get_cache_block(ior->cb_id, nc);
+			cb = get_cache_block(ior->itn_id, ior->dev_id, \
+					     ior->cb_id, nc);
 			if (cb->is_valid == CACHE_VALID) {	/* hit */
 				dprintf("numa cache: cache hit\n");
 				memcpy(scsi_get_in_buffer(cmd) + ior->m_offset, cb->addr + ior->in_offset, ior->length);
@@ -321,6 +323,8 @@ write:
 			/* update cb into cache */
 			cb->is_valid = CACHE_VALID;
 			cb->cb_id = ior->cb_id;
+			cb->dev_id = ior->dev_id;
+			cb->itn_id = ior->itn_id;
 
 			dprintf("numa cache: insert cache block\n");
 			insert_cache_block(cb, nc);
