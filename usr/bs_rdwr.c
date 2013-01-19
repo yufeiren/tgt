@@ -194,7 +194,7 @@ write:
 			nc_mutex_lock(&(nc->mutex));
 
 			/* if block is in cache, invalidate it */
-			invalidate_cache_block(ior->itn_id, ior->dev_id, \
+			invalidate_cache_block(ior->tid, ior->lun, \
 					       ior->cb_id, nc);
 
 			/* write memory data into disk */
@@ -290,7 +290,7 @@ write:
 			nc_mutex_lock(&(nc->mutex));
 
 			/* chech if block is in cache */
-			cb = get_cache_block(ior->itn_id, ior->dev_id, \
+			cb = get_cache_block(ior->tid, ior->lun, \
 					     ior->cb_id, nc);
 			if (cb->is_valid == CACHE_VALID) {	/* hit */
 				dprintf("numa cache: cache hit\n");
@@ -324,7 +324,8 @@ write:
 			cb->is_valid = CACHE_VALID;
 			cb->cb_id = ior->cb_id;
 			cb->dev_id = ior->dev_id;
-			cb->itn_id = ior->itn_id;
+			cb->tid = ior->tid;
+			cb->lun = ior->lun;
 
 			dprintf("numa cache: insert cache block\n");
 			insert_cache_block(cb, nc);

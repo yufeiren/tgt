@@ -27,7 +27,8 @@ struct cache_param {
 
 struct cache_block {
 	int is_valid;
-	uint64_t itn_id;	/* target id */
+	int tid;		/* target id */
+	uint64_t lun;		/* logical unit number */
 	uint64_t dev_id;	/* correspondent device id */
 	uint64_t cb_id;		/* cache block id */
 	uint32_t cbs;		/* cache block size */
@@ -83,13 +84,12 @@ int nc_mutex_lock(pthread_mutex_t *mutex);
 int nc_mutex_unlock(pthread_mutex_t *mutex);
 
 /* cache replacement */
-struct cache_block *get_cache_block(uint64_t itn_id, uint64_t dev_id, \
-				    uint64_t cb_id, \
+struct cache_block *get_cache_block(int tid, uint64_t lun, uint64_t cb_id, \
 				    struct numa_cache *nc);
 
 void insert_cache_block(struct cache_block *cb, struct numa_cache *nc);
 
-void invalidate_cache_block(uint64_t itn_id, uint64_t dev_id, \
+void invalidate_cache_block(int tid, uint64_t lun, \
 			    uint64_t cb_id, struct numa_cache *nc);
 
 /* hash table functions */

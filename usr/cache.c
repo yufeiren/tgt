@@ -269,11 +269,13 @@ int split_io(struct scsi_cmd *cmd, struct host_cache *hc)
 			ior->length = hc->cbs;
 			ior->cb_id = ior->offset / hc->cbs;
 		}
-		ior->itn_id = cmd->cmd_itn_id;
 		ior->dev_id = cmd->dev_id;
+		ior->tid = cmd->tid;
+		ior->lun = cmd->dev->lun;
+
 		ior->nc_id = offset2ncid(ior->offset, hc);
-		dprintf("numa cache: ior[%d] itn_id %ld dev_id %ld off %ld, in_off %d, len %d, cb_id %ld, nc_id %d\n", \
-			i, ior->itn_id, ior->dev_id, ior->offset, \
+		dprintf("numa cache: ior[%d] tid %d lun %ld off %ld, in_off %d, len %d, cb_id %ld, nc_id %d\n", \
+			i, ior->tid, ior->lun, ior->offset, \
 			ior->in_offset, ior->length, ior->cb_id, ior->nc_id);
 
 		aff[ncid2nodeid(ior->nc_id, hc)] ++;

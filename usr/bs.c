@@ -204,6 +204,8 @@ static void *bs_thread_worker_fn(void *arg)
 		pthread_exit(NULL);
 	}
 
+	numa_set_preferred(info->thr_node_id);
+
 	pthread_mutex_unlock(&info->startup_lock);
 
 	while (!info->stop) {

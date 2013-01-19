@@ -5,7 +5,7 @@ int ht_hash_key(uint64_t lba, struct cache_hash_table *ht)
 	return (int) (lba % ht->sz);
 }
 
-struct cache_block *get_cache_block(uint64_t itn_id, uint64_t dev_id, uint64_t cb_id, \
+struct cache_block *get_cache_block(int tid, uint64_t lun, uint64_t cb_id, \
 				    struct numa_cache *nc)
 {
 	int key;
@@ -25,8 +25,8 @@ struct cache_block *get_cache_block(uint64_t itn_id, uint64_t dev_id, uint64_t c
 	cur = NULL;
 	is_found = 0;
 	list_for_each_entry(cur, &(clist->list), list) {
-		if ((cur->cb_id == cb_id) && (cur->dev_id == dev_id) \
-		    && (cur->itn_id == itn_id)) {
+		if ((cur->cb_id == cb_id) && (cur->tid == tid) \
+		    && (cur->lun == lun)) {
 			dprintf("numa cache: hit cache %d times\n", \
 				cur->hit_count);
 			is_found = 1;
@@ -84,7 +84,8 @@ struct cache_block *get_cache_block(uint64_t itn_id, uint64_t dev_id, uint64_t c
 	}
 }
 
-void invalidate_cache_block(uint64_t itn_id, uint64_t dev_id, uint64_t cb_id, struct numa_cache *nc)
+void invalidate_cache_block(int tid, uint64_t lun, uint64_t cb_id, \
+			    struct numa_cache *nc)
 {
 	int key;
 	struct list_head *pos;
@@ -103,8 +104,8 @@ void invalidate_cache_block(uint64_t itn_id, uint64_t dev_id, uint64_t cb_id, st
 	cur = NULL;
 	is_found = 0;
 	list_for_each_entry(cur, &(clist->list), list) {
-		if ((cur->cb_id == cb_id) && (cur->dev_id == dev_id) \
-		    && (cur->itn_id == itn_id)) {
+		if ((cur->cb_id == cb_id) && (cur->tid == tid) \
+		    && (cur->lun == lun)) {
 			is_found = 1;
 			break;
 		}

@@ -2145,6 +2145,7 @@ static void iser_scsi_cmd_iosubmit(struct iser_task *task, int not_last)
 
 	scmd->c_target = target = itn->nexus_target;
 	scmd->it_nexus = itn;
+	scmd->tid = session->target->tid;
 
 	dev_id = scsi_get_devid(target->lid, scmd->lun);
 	scmd->dev_id = dev_id;
@@ -3651,6 +3652,8 @@ static int iser_target_create(struct target *t)
 
 	target = target_find_by_id(t->tid);
 	assert(target != NULL);
+
+	dprintf("iser create target: %d-%s\n", t->tid, t->name);
 
 	target->rdma = 1;
 	target->session_param[ISCSI_PARAM_INITIAL_R2T_EN].val = 1;
