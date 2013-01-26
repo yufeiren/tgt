@@ -1,6 +1,25 @@
+#ifndef BS_THREAD_H
+#define BS_THREAD_H
+
 typedef void (request_func_t) (struct scsi_cmd *);
 
 #define MAX_NR_NUMA_NODES	128
+
+/*
+ * Pre-registered memory.  Buffers are allocated by iscsi from us, handed
+ * to device to fill, then iser can send them directly without registration.
+ * Also for write path.
+ */
+struct iser_membuf {
+	void *addr;
+	int cur_node;
+	void *numa_addr[MAX_NR_NUMA_NODES];
+	unsigned size;
+	unsigned offset; /* offset within task data */
+	struct list_head task_list;
+	int rdma;
+	struct list_head pool_list;
+};
 
 struct bs_thread_info {
 	pthread_t *worker_thread;
@@ -32,4 +51,6 @@ extern tgtadm_err bs_thread_open(struct bs_thread_info *info, request_func_t *rf
 				 int nr_threads);
 extern void bs_thread_close(struct bs_thread_info *info);
 extern int bs_thread_cmd_submit(struct scsi_cmd *cmd);
+
+#endif
 

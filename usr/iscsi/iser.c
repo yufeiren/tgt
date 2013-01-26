@@ -916,6 +916,8 @@ static void iser_complete_task(struct iser_task *task)
 		return;
 	}
 
+	dprintf("numa cache: task:%p del task: prev %p next %p\n", \
+		task, (&task->session_list)->prev, (&task->session_list)->next);
 	list_del(&task->session_list);
 	if (task->is_read)
 		iser_task_free_in_bufs(task);
@@ -2075,8 +2077,6 @@ static void iser_scsi_cmd_iosubmit(struct iser_task *task, int not_last)
 	struct iser_conn *conn = task->conn;
 	struct iscsi_session *session = conn->h.session;
 	struct iser_membuf *data_buf;
-	uint64_t lba;
-	int nodeid;
 
 	dprintf("numa cache: start iser_scsi_cmd_iosubmit\n");
 
@@ -2128,61 +2128,7 @@ static void iser_scsi_cmd_iosubmit(struct iser_task *task, int not_last)
 	scmd->mreq = NULL;
 	scmd->sense_len = 0;
 
-	/* parse cmd to which numa node */
-	dprintf("numa cache: start parse numa node\n");
-
-	/* find dev */
-	if (task->is_read || task->is_write) {
-	struct target *target;
-	struct it_nexus *itn;
-	uint64_t dev_id, itn_id = scmd->cmd_itn_id;
-
-	itn = it_nexus_lookup(session->target->tid, itn_id);
-	if (!itn) {
-		eprintf("invalid nexus %d %" PRIx64 "\n", session->target->tid, itn_id);
-		return;
-	}
-
-	scmd->c_target = target = itn->nexus_target;
-	scmd->it_nexus = itn;
-	scmd->tid = session->target->tid;
-
-	dev_id = scsi_get_devid(target->lid, scmd->lun);
-	scmd->dev_id = dev_id;
-	dprintf("%p %x %" PRIx64 "\n", scmd, scmd->scb[0], dev_id);
-
-	/*	scmd->dev = device_lookup(target, dev_id);*/
-	struct scsi_lu *lu;
-
-	list_for_each_entry(lu, &target->device_list, device_siblings)
-		if (lu->lun == dev_id)
-			scmd->dev = lu;
-	/* use LUN0 */
-	if (!scmd->dev)
-		scmd->dev = list_first_entry(&target->device_list,
-					     struct scsi_lu,
-					     device_siblings);
-	/*it_nexus_lu_info_lookup*/
-
-	lba = scsi_rw_offset(scmd->scb);
-	dprintf("numa cache: start parse numa node 2\n");
-	scmd->offset = lba << scmd->dev->blk_shift;
-	dprintf("numa cache: start parse numa node split io\n");
-	data_buf->cur_node = split_io(scmd, &hc);
-	scmd->nodeid = data_buf->cur_node;
-	dprintf("numa cache: parse this task to node %d\n",
-		data_buf->cur_node);
-	dprintf("numa cache: update network buf address\n");
-
-	data_buf->addr = data_buf->numa_addr[data_buf->cur_node];
-	if (task->is_write) {
-		scsi_set_out_buffer(scmd, data_buf->addr);
-	}
-	if (task->is_read) {
-		scsi_set_in_buffer(scmd, data_buf->addr);
-	}
-
-	}
+	scmd->netbuf = data_buf;
 
 	dprintf("task:%p tag:0x%04"PRIx64 "\n", task, task->tag);
 
@@ -2543,7 +2489,6 @@ static int iser_scsi_cmd_rx(struct iser_task *task)
 	uint32_t imm_data_sz = ntoh24(req_bhs->dlength);
 	uint32_t xfer_sz = ntohl(req_bhs->data_length);
 	int err = 0;
-	uint64_t lba;
 
 	task->is_read = flags & ISCSI_FLAG_CMD_READ;
 	task->is_write = flags & ISCSI_FLAG_CMD_WRITE;
@@ -2617,11 +2562,9 @@ static int iser_scsi_cmd_rx(struct iser_task *task)
 		task->rdma_wr_remains = task->in_len;
 	}
 
-	/* get lba and schedule */
-	lba = scsi_rw_offset(req_bhs->cdb);
-	dprintf("numa cache: this lba is: %ld\n", lba);
-
 	list_add_tail(&task->session_list, &session->cmd_list);
+	dprintf("numa cache: add task: prev %p next %p\n", \
+		(&task->session_list)->prev, (&task->session_list)->next);
 out:
 	dprintf("task:%p tag:0x%04"PRIx64 " scsi_op:0x%x %s%s in_len:%d out_len:%d "
 		"imm_sz:%d unsol_sz:%d cmdsn:0x%x expcmdsn:0x%x\n",
@@ -2992,6 +2935,8 @@ static void iser_rx_handler(struct iser_work_req *rxd)
 	task->in_buf_num = 0;
 	INIT_LIST_HEAD(&task->out_buf_list);
 	task->out_buf_num = 0;
+
+	dprintf("numa cache: task:%p opcode is 0x%x\n", task, task->opcode);
 
 	if (likely(task->opcode == ISCSI_OP_SCSI_CMD))
 		err = iser_scsi_cmd_rx(task);

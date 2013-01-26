@@ -1,3 +1,11 @@
+Version history
+nc-v0.1.0:
+First stable version. Support read/write.
+nc-v0.1.1:
+Support multiple-target and multiple-lun.
+latest:
+Move split_io to worker thread.
+
 1. write invalidate support - done
 2. multiple LUN support
 3. Asymantic system (Nodes have different systems)
@@ -8,3 +16,4 @@ numa_alloc_onnode would take no effect. bug this bug to community.
 7. numa_run_on_node to default node. - done
 8. free numa network buffer when the connection is freed
 9. reduce large memory management overhead
+

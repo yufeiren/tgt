@@ -64,6 +64,7 @@ struct scsi_cmd {
 	int nodeid;	/* for numa node id */
 
 	struct list_head bs_list;
+	void *netbuf;
 
 	struct it_nexus *it_nexus;
 	struct it_nexus_lu_info *itn_lu_info;

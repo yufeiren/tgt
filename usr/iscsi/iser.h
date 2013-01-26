@@ -75,22 +75,6 @@ struct iser_work_req {
 	};
 };
 
-/*
- * Pre-registered memory.  Buffers are allocated by iscsi from us, handed
- * to device to fill, then iser can send them directly without registration.
- * Also for write path.
- */
-struct iser_membuf {
-	void *addr;
-	int cur_node;
-	void *numa_addr[MAX_NR_NUMA_NODES];
-	unsigned size;
-	unsigned offset; /* offset within task data */
-	struct list_head task_list;
-	int rdma;
-	struct list_head pool_list;
-};
-
 struct iser_pdu {
 	struct iser_hdr *iser_hdr;
 	struct iscsi_hdr *bhs;

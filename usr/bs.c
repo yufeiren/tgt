@@ -197,7 +197,6 @@ static void *bs_thread_worker_fn(void *arg)
 	/* round robin create thread on each node */
 	nc_id = info->thr_node_id;
 	dprintf("started this thread on node: %d\n", nc_id);
-	info->thr_node_id = (info->thr_node_id + 1) % info->nr_numa_nodes;
 
 	if (numa_run_on_node(info->thr_node_id) != 0) {
 		eprintf("numa cache: numa_run_on_node fail\n");
@@ -205,6 +204,8 @@ static void *bs_thread_worker_fn(void *arg)
 	}
 
 	numa_set_preferred(info->thr_node_id);
+
+	info->thr_node_id = (info->thr_node_id + 1) % info->nr_numa_nodes;
 
 	pthread_mutex_unlock(&info->startup_lock);
 
@@ -226,6 +227,19 @@ static void *bs_thread_worker_fn(void *arg)
 		list_del(&cmd->bs_list);
 		pthread_mutex_unlock(&info->pending_lock[nc_id]);
 
+		/* split cmd */
+		if (cmd->nodeid == -1)
+			cmd->nodeid = split_io(cmd, &hc);
+		if (cmd->nodeid != nc_id) {
+			/* give this cmd to another node */
+			dprintf("numa cache: give this cmd from node %d to %d\n", nc_id, cmd->nodeid);
+			pthread_mutex_lock(&info->pending_lock[cmd->nodeid]);
+			list_add_tail(&cmd->bs_list, &info->pending_list[cmd->nodeid]);
+			pthread_mutex_unlock(&info->pending_lock[cmd->nodeid]);
+			pthread_cond_signal(&info->pending_cond[cmd->nodeid]);
+			continue;
+		}
+		dprintf("numa cache: worker thread perform\n");
 		info->request_fn(cmd);
 
 		pthread_mutex_lock(&finished_lock);
@@ -430,13 +444,18 @@ int bs_thread_cmd_submit(struct scsi_cmd *cmd)
 
 	/* split io request into sub io request
 	nodeid = split_io(cmd, &hc);
-	cmd->nodeid = nodeid;*/
+	cmd->nodeid = nodeid;
 	nodeid = cmd->nodeid;
 	dprintf("numa cache: dispatch cmd to node %d\n", nodeid);
 	dprintf("numa cache: dispatch offset %ld, to numa node: %d\n", \
-		cmd->offset, nodeid);
+	cmd->offset, nodeid); */
 
+	/* dispatch this IO to a NUMA node randomly */
+	nodeid = rand_r(&(hc.seed)) % hc.nr_numa_nodes;
+
+	cmd->nodeid = -1;
 	/* numa cache support */
+	dprintf("numa cache: dispatch cmd to node %d\n", nodeid);
 
 	pthread_mutex_lock(&info->pending_lock[nodeid]);
 

@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <string.h>
 #include <inttypes.h>
 #include <sys/types.h>
@@ -14,6 +15,7 @@
 #include "log.h"
 #include "tgtd.h"
 #include "scsi.h"
+#include "bs_thread.h"
 
 #define CACHE_INVALID	0
 #define CACHE_VALID	1
@@ -66,6 +68,7 @@ struct host_cache {
 	int nr_cache_area;	/* cache area for each numa nodes */
 	size_t buffer_size;	/* cache size of all nodes together */
 	int cbs;		/* cache block size */
+	unsigned seed;
 	struct numa_cache *nc;  /* pointer to numa caches */
 };
 
@@ -107,9 +110,6 @@ void sort_hit_list(struct cache_block *cb, struct cache_block *head);
 void lru_tablecell_list(struct cache_block *cb, struct cache_block *head);
 
 void lru_hit_list(struct cache_block *cb, struct cache_block *head);
-
-
-
 
 /* split io-request into sub-tasks
  * return value is a numa node id
