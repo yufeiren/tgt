@@ -27,8 +27,8 @@ struct cache_block *get_cache_block(int tid, uint64_t lun, uint64_t cb_id, \
 	list_for_each_entry(cur, &(clist->list), list) {
 		if ((cur->cb_id == cb_id) && (cur->tid == tid) \
 		    && (cur->lun == lun)) {
-			dprintf("numa cache: hit cache %d times\n", \
-				cur->hit_count);
+			dprintf("numa cache: hit cache info %ld %d %ld.\n", \
+				cb_id, tid, lun);
 			is_found = 1;
 			break;
 		}
@@ -68,13 +68,17 @@ struct cache_block *get_cache_block(int tid, uint64_t lun, uint64_t cb_id, \
 		dprintf("numa cache: check hit count list\n");
 		if (!list_empty(&(nc->hit_list.hit_list))) {
 			/* get the last item */
-			dprintf("numa cache: LRU replacement: get the last block in hit list\n");
 			pos = nc->hit_list.hit_list.prev;
 			cur = list_entry(pos, struct cache_block, hit_list);
+			dprintf("numa cache: LRU replace cache info %ld %d %ld\n",
+				cur->cb_id, cur->tid, cur->lun);
 
 			dprintf("numa cache: delete from hash table\n");
 			/* delete from hash table */
 			list_del(&(cur->list));
+
+			/* delete from hit list */
+			list_del(&(cur->hit_list));
 
 			cur->hit_count = 0;
 			cur->is_valid = CACHE_INVALID;

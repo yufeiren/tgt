@@ -162,6 +162,7 @@ void insert_cache_block(struct cache_block *cb, struct numa_cache *nc)
 
 	/* insert into hash table */
 	list_add(&(cb->list), &(clist->list));
+	/* insert into hit list */
 	list_add(&(cb->hit_list), &(nc->hit_list.hit_list));
 
 	return;
