@@ -216,10 +216,11 @@ int split_io(struct scsi_cmd *cmd, struct host_cache *hc)
 	uint64_t lba;
 
 	struct iser_membuf *data_buf;
+	struct tcp_data_buf *tcp_buf;
 
 	dprintf("numa cache: start split io\n");
 	lba = scsi_rw_offset(cmd->scb);
-	dprintf("numa cache: start parse numa node 2\n");
+
 	cmd->offset = lba << cmd->dev->blk_shift;
 
 	switch (cmd->scb[0])
@@ -304,16 +305,19 @@ int split_io(struct scsi_cmd *cmd, struct host_cache *hc)
 	dprintf("numa cache: start parse numa node split io\n");
 
 	/* reset network buffer location */
-	data_buf = (struct iser_membuf *) cmd->netbuf;
-	data_buf->cur_node = nodeid;
-	cmd->nodeid = nodeid;
-	/*	data_buf->cur_node = split_io(scmd, &hc);
-		scmd->nodeid = data_buf->cur_node;*/
-	dprintf("numa cache: parse this task to node %d\n",
-		data_buf->cur_node);
+	if (cmd->rdma == 1) {
+		data_buf = (struct iser_membuf *) cmd->netbuf;
+		data_buf->cur_node = nodeid;
+		cmd->nodeid = nodeid;
+		data_buf->addr = data_buf->numa_addr[data_buf->cur_node];
+	} else {
+		tcp_buf = (struct tcp_data_buf *) cmd->netbuf;
+		tcp_buf->cur_node = nodeid;
+		cmd->nodeid = nodeid;
+		tcp_buf->cur_addr = tcp_buf->addr[tcp_buf->cur_node];
+	}
+	dprintf("numa cache: parse this task to node %d\n", nodeid);
 	dprintf("numa cache: update network buf address\n");
-
-	data_buf->addr = data_buf->numa_addr[data_buf->cur_node];
 
 	switch (cmd->scb[0])
 	{
@@ -321,13 +325,21 @@ int split_io(struct scsi_cmd *cmd, struct host_cache *hc)
 	case WRITE_10:
 	case WRITE_12:
 	case WRITE_16:
-		scsi_set_out_buffer(cmd, data_buf->addr);
+		if (cmd->rdma == 1) {
+			scsi_set_out_buffer(cmd, data_buf->addr);
+		} else {
+			scsi_set_out_buffer(cmd, tcp_buf->cur_addr);
+		}
 		break;
 	case READ_6:
 	case READ_10:
 	case READ_12:
 	case READ_16:
-		scsi_set_in_buffer(cmd, data_buf->addr);
+		if (cmd->rdma == 1) {
+			scsi_set_in_buffer(cmd, data_buf->addr);
+		} else {
+			scsi_set_in_buffer(cmd, tcp_buf->cur_addr);
+		}
 		break;
 	default:
 		dprintf("numa cache: command not support 0x%x\n", \

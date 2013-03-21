@@ -1126,7 +1126,7 @@ int target_cmd_perform(int tid, struct scsi_cmd *cmd)
 {
 	struct tgt_cmd_queue *q = &cmd->dev->cmd_queue;
 	int result, enabled = 0;
-
+	dprintf("numa cache: in target_cmd_perform\n");
 	cmd_hlist_insert(cmd->it_nexus, cmd);
 
 	enabled = cmd_enabled(q, cmd);

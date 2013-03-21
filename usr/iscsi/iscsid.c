@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <ctype.h>
 #include <sys/epoll.h>
 
 #include "iscsid.h"
@@ -42,6 +43,8 @@
 #include "crc32c.h"
 
 #define MAX_QUEUE_CMD	128
+
+struct tcp_data_buf_head tcp_buf_list;
 
 LIST_HEAD(iscsi_portals_list);
 
@@ -1168,13 +1171,26 @@ static struct iscsi_task *iscsi_alloc_task(struct iscsi_connection *conn,
 		return NULL;
 
 	if (data_len) {
+#ifndef NUMA_CACHE
 		buf = conn->tp->alloc_data_buf(conn, data_len);
 		if (!buf) {
 			conn->tp->free_task(task);
 			return NULL;
 		}
 		task->data = buf;
+#else
+		task->tdbuf = (struct tcp_data_buf *) \
+			conn->tp->alloc_data_buf(conn, data_len);
+		dprintf("numa cache: get tcp_buf, sz %d, addr %" PRIx64 "\n", \
+			task->tdbuf->sz, task->tdbuf->addr[0]);
+		task->data = task->tdbuf->addr[0];
+#endif
+		dprintf("numa cache: valloc %d bytes\n", data_len);
 	}
+
+	task->scmd.rdma = 0;
+	dprintf("numa cache: this scmd is for iscsi\n");
+	task->scmd.netbuf = task->tdbuf;
 
 	memcpy(&task->req, req, sizeof(*req));
 	task->conn = conn;
@@ -1190,11 +1206,15 @@ void iscsi_free_task(struct iscsi_task *task)
 	struct iscsi_connection *conn = task->conn;
 
 	list_del(&task->c_siblings);
-
+#ifndef NUMA_CACHE
 	conn->tp->free_data_buf(conn, scsi_get_in_buffer(&task->scmd));
 	conn->tp->free_data_buf(conn, scsi_get_out_buffer(&task->scmd));
+#else
+	conn->tp->free_data_buf(conn, task->tdbuf);
+#endif
 
 	conn->tp->free_task(task);
+	
 	conn_put(conn);
 }
 
@@ -1622,6 +1642,7 @@ static int iscsi_scsi_cmd_rx_start(struct iscsi_connection *conn)
 
 	ext_len = ahs_len ? sizeof(req->cdb) + ahs_len : 0;
 
+	dprintf("numa cache: data length is %d\n", max(imm_len, data_len));
 	task = iscsi_alloc_task(conn, ext_len, max(imm_len, data_len));
 	if (task)
 		conn->rx_task = task;
@@ -2362,8 +2383,13 @@ int iscsi_transportid(int tid, uint64_t itn_id, char *buf, int size)
 int iscsi_param_parse_portals(char *p, int do_add,
 			int do_delete)
 {
+	int pool_size;
+	pool_size = TCP_BUF_SZ_MB * 1024 *1024;
+
 	while (*p) {
 		if (!strncmp(p, "portal", 6)) {
+			dprintf("numa cache: parse portal - %s\n", p);
+
 			char *addr, *q;
 			int len = 0, port = 0;
 
@@ -2412,11 +2438,36 @@ int iscsi_param_parse_portals(char *p, int do_add,
 					return -1;
 				}
 			}
+		} else if (!strncmp(p, "pool_sz_mb", 10)) {
+			dprintf("numa cache: parse pool_sz_mb - %s\n", p);
+			/* allocate and de-allocate memory blocks */
+			char *addr;
+			int i = 0;
+			addr = p + 11;
+
+			char buf[16];
+			memset(buf, '\0', 16);
+
+			while (isdigit(*(addr + i))) {
+				*(buf + i) = *(addr + i);
+				i++;
+			}
+
+			pool_size = atoi(buf) * 1024 * 1024;
+			dprintf("numa cache: pool_size is %d\n", pool_size);
 		}
 
 		p += strcspn(p, ",");
 		if (*p == ',')
 			++p;
+	}
+
+	/* how to add tcp buf per portal? */
+	if (do_add) {
+		iscsi_add_tcp_buf(&tcp_buf_list, pool_size, TCP_TRANSFER_SIZE);
+	}
+	if (do_delete) {
+		iscsi_delete_tcp_buf(&tcp_buf_list, pool_size, TCP_TRANSFER_SIZE);
 	}
 
 	return 0;

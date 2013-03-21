@@ -62,6 +62,7 @@ struct scsi_cmd {
 	int sense_len;
 
 	int nodeid;	/* for numa node id */
+	int rdma;
 
 	struct list_head bs_list;
 	void *netbuf;

@@ -21,6 +21,14 @@ struct iser_membuf {
 	struct list_head pool_list;
 };
 
+struct tcp_data_buf {
+	char *addr[MAX_NR_NUMA_NODES];
+	int sz;
+	int cur_node;			/* current NUMA node */
+	char *cur_addr;
+	struct list_head list;
+};
+
 struct bs_thread_info {
 	pthread_t *worker_thread;
 	int nr_worker_threads;

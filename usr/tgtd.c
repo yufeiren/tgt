@@ -494,6 +494,7 @@ int setup_param(char *name, int (*parser)(char *))
 
 static int parse_params(char *name, char *p)
 {
+	dprintf("parse_params: %s, %s\n", name, p);
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(params) && params[i].name; i++) {
@@ -573,7 +574,7 @@ int main(int argc, char **argv)
 		default:
 			if (strncmp(argv[optind - 1], "--", 2))
 				usage(1);
-
+			dprintf("parse_params main: %s, %s\n", argv[optind - 1] + 2, argv[optind]);
 			ret = parse_params(argv[optind - 1] + 2, argv[optind]);
 			if (ret)
 				usage(1);

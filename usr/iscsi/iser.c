@@ -85,7 +85,7 @@ char *iser_portal_addr;
 
 #define MAX_POLL_WC 32
 
-#define DEFAULT_POOL_SIZE_MB    256
+#define DEFAULT_POOL_SIZE_MB    1024
 #define ISER_MAX_QUEUE_CMD      128     /* iSCSI cmd window size */
 #define MAX_CQ_ENTRIES          (128 * 1024)
 
@@ -2129,6 +2129,7 @@ static void iser_scsi_cmd_iosubmit(struct iser_task *task, int not_last)
 	scmd->sense_len = 0;
 
 	scmd->netbuf = data_buf;
+	scmd->rdma = 1;
 
 	dprintf("task:%p tag:0x%04"PRIx64 "\n", task, task->tag);
 

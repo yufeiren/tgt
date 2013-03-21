@@ -36,6 +36,8 @@
 #include "tgtd.h"
 #include "util.h"
 
+extern struct tcp_data_buf_head tcp_buf_list;
+
 static void iscsi_tcp_event_handler(int fd, int events, void *data);
 
 static int listen_fds[8];
@@ -179,6 +181,7 @@ int iscsi_tcp_init_portal(char *addr, int port, int tpgt)
 	void *addrptr = NULL;
 
 	port = port ? port : ISCSI_LISTEN_PORT;
+	dprintf("listening for tcp connections on port %d\n", port);
 
 	memset(servname, 0, sizeof(servname));
 	snprintf(servname, sizeof(servname), "%d", port);
@@ -267,6 +270,79 @@ int iscsi_tcp_init_portal(char *addr, int port, int tpgt)
 	freeaddrinfo(res0);
 
 	return !nr_sock;
+}
+
+int iscsi_add_tcp_buf(struct tcp_data_buf_head *td, int pool_size, int block_size)
+{
+	int ret;
+	int i, j;
+	int nr_numa_nodes;
+	struct tcp_data_buf *cur;
+
+	nr_numa_nodes = numa_num_configured_nodes();
+
+	struct bitmask *nodemask;
+	nodemask = numa_get_run_node_mask();
+
+	/* init td */
+	pthread_mutex_init(&td->mutex, NULL);
+	pthread_cond_init(&td->cond, NULL);
+
+	INIT_LIST_HEAD(&(td->head.list));
+
+	/* alloc buff */
+	td->t = malloc(pool_size / block_size * sizeof(struct tcp_data_buf));
+	if (td->t == NULL) {
+		eprintf("numa cache: malloc failed.\n");
+		return -1;
+	}
+
+	memset(td->t, '\0', \
+	       pool_size / block_size * sizeof(struct tcp_data_buf));
+
+	for (i = 0; i < nr_numa_nodes; i ++) {
+		ret = numa_run_on_node(i);
+		if (ret == -1) {
+			eprintf("numa cache: numa_run_on_node(%d) failed.\n", i);
+			return -1;
+		}
+
+		dprintf("numa cache: alloc %d bytes in node %d\n", \
+			pool_size, i);
+		td->addr[i] = (char *) numa_alloc_onnode(pool_size, i);
+		if (td->addr[i] == NULL) {
+			eprintf("numa cache: numa_alloc_onnode(%d, %d) failed.\n", \
+				pool_size, i);
+			return -1;
+		}
+
+		memset(td->addr[i], '\0', pool_size);
+
+		for (j = 0; j < pool_size / block_size; j ++) {
+			cur = td->t + j;
+			cur->addr[i] = td->addr[i] + block_size * j;
+		}
+	}
+
+	/* add all blocks into tcp list */
+	for (i = 0; i < pool_size / block_size; i ++) {
+		cur = td->t + i;
+		cur->sz = block_size;
+
+		INIT_LIST_HEAD(&(cur->list));
+		list_add_tail(&(cur->list), &(td->head.list));
+
+		dprintf("numa cache: tcp_buf[%d], sz %d, addr %" PRIx64 "\n", i, cur->sz, cur->addr[0]);
+	}
+
+	numa_run_on_node_mask(nodemask);
+
+	return 0;
+}
+
+int iscsi_delete_tcp_buf(struct tcp_data_buf_head *tdbuf, int pool_size, int block_size)
+{
+	return 0;
 }
 
 int iscsi_add_portal(char *addr, int port, int tpgt)
@@ -428,13 +504,53 @@ static void iscsi_tcp_free_task(struct iscsi_task *task)
 
 static void *iscsi_tcp_alloc_data_buf(struct iscsi_connection *conn, size_t sz)
 {
+#ifndef NUMA_CACHE
 	return valloc(sz);
+#else
+	struct tcp_data_buf_head *t = &tcp_buf_list;
+	struct tcp_data_buf *b;
+
+	pthread_mutex_lock(&t->mutex);
+
+	while (list_empty(&(t->head.list))) {
+		pthread_cond_wait(&(t->cond), &(t->mutex));
+	}
+
+	b = list_first_entry(&t->head.list, struct tcp_data_buf, list);
+	list_del(&b->list);
+
+	pthread_mutex_unlock(&t->mutex);
+
+	return (void *) b;
+#endif
 }
 
 static void iscsi_tcp_free_data_buf(struct iscsi_connection *conn, void *buf)
 {
+#ifndef NUMA_CACHE
 	if (buf)
 		free(buf);
+#else
+	if (buf == NULL)
+		return;
+
+	struct tcp_data_buf *tdbuf = (struct tcp_data_buf *) buf;
+
+	struct tcp_data_buf_head *t = &tcp_buf_list;
+
+	dprintf("numa cache: free tcp buf - sz %d addr %" PRIx64 "\n", \
+		tdbuf->sz, tdbuf->addr[0]);
+
+	pthread_mutex_lock(&t->mutex);
+
+	list_add_tail(&(tdbuf->list), &(t->head.list));
+
+	pthread_mutex_unlock(&t->mutex);
+
+	pthread_cond_signal(&t->cond);
+
+	return;
+#endif
 }
 
 static int iscsi_tcp_getsockname(struct iscsi_connection *conn,
