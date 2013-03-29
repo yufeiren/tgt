@@ -550,6 +550,7 @@ int main(int argc, char **argv)
 			if (ret)
 				bad_optarg(ret, ch, optarg);
 			break;
+#ifdef NUMA_CACHE
 		case 's':
 			cp.buffer_size = byte_atoi(optarg);
 			if (cp.buffer_size == 0)
@@ -565,6 +566,7 @@ int main(int argc, char **argv)
 			if (cp.cache_way == 0)
 				bad_optarg(cp.cache_way, ch, optarg);
 			break;
+#endif
 		case 'V':
 			version();
 			break;
@@ -622,7 +624,9 @@ int main(int argc, char **argv)
 
 	bs_init();
 
+#ifdef NUMA_CACHE
 	init_cache(&hc, &cp);
+#endif
 
 	event_loop();
 
