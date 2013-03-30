@@ -22,16 +22,18 @@
 #include <stdint.h>
 #include <inttypes.h>
 #include <netdb.h>
+#ifdef NUMA_CACHE
 #include <numa.h>
-
+#endif
 #include "transport.h"
 #include "list.h"
 #include "param.h"
 #include "log.h"
 #include "tgtd.h"
 #include "util.h"
+#ifdef NUMA_CACHE
 #include "bs_thread.h"
-
+#endif
 #include "iscsi_proto.h"
 #include "iscsi_if.h"
 
@@ -58,6 +60,7 @@
 
 #define sid_to_tsih(sid) ((sid) >> 48)
 
+#ifdef NUMA_CACHE
 /* for NUMA-cache TCP driver */
 #define TCP_TRANSFER_SIZE  (512 * 1024)
 #define TCP_BUF_SZ_MB  128
@@ -69,6 +72,7 @@ struct tcp_data_buf_head {
 	pthread_cond_t cond;
 	struct tcp_data_buf head;
 };
+#endif
 
 struct iscsi_pdu {
 	struct iscsi_hdr bhs;
@@ -145,8 +149,9 @@ struct iscsi_task {
 
 	struct scsi_cmd scmd;
 
+#ifdef NUMA_CACHE
 	struct tcp_data_buf *tdbuf;
-
+#endif
 	unsigned long extdata[0];
 };
 

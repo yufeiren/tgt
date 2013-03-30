@@ -1095,7 +1095,9 @@ int target_cmd_queue(int tid, struct scsi_cmd *cmd)
 
 	cmd->c_target = target = itn->nexus_target;
 	cmd->it_nexus = itn;
+#ifdef NUMA_CACHE
 	cmd->tid = target->tid;
+#endif
 
 	dev_id = scsi_get_devid(target->lid, cmd->lun);
 	cmd->dev_id = dev_id;

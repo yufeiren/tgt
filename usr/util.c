@@ -196,6 +196,7 @@ int get_blk_shift(unsigned int size)
 	return shift;
 }
 
+#ifdef NUMA_CACHE
 size_t byte_atoi(char *str)
 {
 	double theNum;
@@ -227,4 +228,4 @@ size_t byte_atoi(char *str)
 
 	return (size_t) theNum;
 }
-
+#endif

@@ -38,9 +38,13 @@
 #include "tgtadm_error.h"
 #include "util.h"
 #include "bs_thread.h"
+#ifdef NUMA_CACHE
 #include "cache.h"
+#endif
 
+#ifdef NUMA_CACHE
 extern struct host_cache hc;
+#endif
 
 LIST_HEAD(bst_list);
 
@@ -188,12 +192,15 @@ static void *bs_thread_worker_fn(void *arg)
 	struct bs_thread_info *info = arg;
 	struct scsi_cmd *cmd;
 	sigset_t set;
+#ifdef NUMA_CACHE
 	int nc_id;
+#endif
 
 	sigfillset(&set);
 	sigprocmask(SIG_BLOCK, &set, NULL);
 
 	pthread_mutex_lock(&info->startup_lock);
+#ifdef NUMA_CACHE
 	/* round robin create thread on each node */
 	nc_id = info->thr_node_id;
 	dprintf("started this thread on node: %d\n", nc_id);
@@ -206,27 +213,51 @@ static void *bs_thread_worker_fn(void *arg)
 	numa_set_preferred(info->thr_node_id);
 
 	info->thr_node_id = (info->thr_node_id + 1) % info->nr_numa_nodes;
-
+#endif
 	pthread_mutex_unlock(&info->startup_lock);
 
 	while (!info->stop) {
+#ifndef NUMA_CACHE
+		pthread_mutex_lock(&info->pending_lock);
+#else
 		pthread_mutex_lock(&info->pending_lock[nc_id]);
+#endif
 	retest:
+#ifndef NUMA_CACHE
+		if (list_empty(&info->pending_list)) {
+			pthread_cond_wait(&info->pending_cond, &info->pending_lock);
+#else
 		if (list_empty(&info->pending_list[nc_id])) {
 			pthread_cond_wait(&info->pending_cond[nc_id], &info->pending_lock[nc_id]);
+#endif
 			if (info->stop) {
+#ifndef NUMA_CACHE
+				pthread_mutex_unlock(&info->pending_lock);
+#else
 				pthread_mutex_unlock(&info->pending_lock[nc_id]);
+#endif
 				pthread_exit(NULL);
 			}
 			goto retest;
 		}
 
+#ifndef NUMA_CACHE
+		cmd = list_first_entry(&info->pending_list,
+				       struct scsi_cmd, bs_list);
+#else
 		cmd = list_first_entry(&info->pending_list[nc_id],
 				       struct scsi_cmd, bs_list);
+#endif
 
 		list_del(&cmd->bs_list);
-		pthread_mutex_unlock(&info->pending_lock[nc_id]);
 
+#ifndef NUMA_CACHE
+		pthread_mutex_unlock(&info->pending_lock);
+#else
+		pthread_mutex_unlock(&info->pending_lock[nc_id]);
+#endif
+
+#ifdef NUMA_CACHE
 		/* split cmd */
 		if (cmd->nodeid == -1)
 			cmd->nodeid = split_io(cmd, &hc);
@@ -240,6 +271,7 @@ static void *bs_thread_worker_fn(void *arg)
 			continue;
 		}
 		dprintf("numa cache: worker thread perform\n");
+#endif
 		info->request_fn(cmd);
 
 		pthread_mutex_lock(&finished_lock);
@@ -364,6 +396,11 @@ tgtadm_err bs_thread_open(struct bs_thread_info *info, request_func_t *rfn,
 	eprintf("%d\n", nr_threads);
 	info->request_fn = rfn;
 
+#ifndef NUMA_CACHE
+	INIT_LIST_HEAD(&info->pending_list);
+	pthread_cond_init(&info->pending_cond, NULL);
+	pthread_mutex_init(&info->pending_lock, NULL);
+#else
 	/* add numa nodes support */
 	if (numa_available() != 0) {
 		eprintf("numa cache: Does not support NUMA API\n");
@@ -379,6 +416,7 @@ tgtadm_err bs_thread_open(struct bs_thread_info *info, request_func_t *rfn,
 		pthread_cond_init(&info->pending_cond[i], NULL);
 		pthread_mutex_init(&info->pending_lock[i], NULL);
 	}
+#endif
 	pthread_mutex_init(&info->startup_lock, NULL);
 
 	pthread_mutex_lock(&info->startup_lock);
@@ -406,12 +444,16 @@ destroy_threads:
 		eprintf("stopped the worker thread %d\n", i - 1);
 	}
 
+#ifndef NUMA_CACHE
+	pthread_cond_destroy(&info->pending_cond);
+	pthread_mutex_destroy(&info->pending_lock);
+#else
 	for (i = 0; i < info->nr_numa_nodes; i++) {
 		pthread_cond_destroy(&info->pending_cond[i]);
 		pthread_mutex_destroy(&info->pending_lock[i]);
 	}
+#endif
 	pthread_mutex_destroy(&info->startup_lock);
-
 	free(info->worker_thread);
 
 	return TGTADM_NOMEM;
@@ -440,6 +482,15 @@ int bs_thread_cmd_submit(struct scsi_cmd *cmd)
 	struct scsi_lu *lu = cmd->dev;
 	struct bs_thread_info *info = BS_THREAD_I(lu);
 
+#ifndef NUMA_CACHE
+	pthread_mutex_lock(&info->pending_lock);
+
+	list_add_tail(&cmd->bs_list, &info->pending_list);
+
+	pthread_mutex_unlock(&info->pending_lock);
+
+	pthread_cond_signal(&info->pending_cond);
+#else
 	int nodeid;
 
 	/* split io request into sub io request
@@ -464,6 +515,7 @@ int bs_thread_cmd_submit(struct scsi_cmd *cmd)
 	pthread_mutex_unlock(&info->pending_lock[nodeid]);
 
 	pthread_cond_signal(&info->pending_cond[nodeid]);
+#endif
 
 	set_cmd_async(cmd);
 

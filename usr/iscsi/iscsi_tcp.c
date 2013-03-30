@@ -36,8 +36,9 @@
 #include "tgtd.h"
 #include "util.h"
 
+#ifdef NUMA_CACHE
 extern struct tcp_data_buf_head tcp_buf_list;
-
+#endif
 static void iscsi_tcp_event_handler(int fd, int events, void *data);
 
 static int listen_fds[8];
@@ -272,6 +273,7 @@ int iscsi_tcp_init_portal(char *addr, int port, int tpgt)
 	return !nr_sock;
 }
 
+#ifdef NUMA_CACHE
 int iscsi_add_tcp_buf(struct tcp_data_buf_head *td, int pool_size, int block_size)
 {
 	int ret;
@@ -344,6 +346,7 @@ int iscsi_delete_tcp_buf(struct tcp_data_buf_head *tdbuf, int pool_size, int blo
 {
 	return 0;
 }
+#endif
 
 int iscsi_add_portal(char *addr, int port, int tpgt)
 {

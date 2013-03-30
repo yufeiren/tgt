@@ -3,6 +3,7 @@
 
 typedef void (request_func_t) (struct scsi_cmd *);
 
+#ifdef NUMA_CACHE
 #define MAX_NR_NUMA_NODES	128
 
 /*
@@ -28,11 +29,19 @@ struct tcp_data_buf {
 	char *cur_addr;
 	struct list_head list;
 };
-
+#endif
 struct bs_thread_info {
 	pthread_t *worker_thread;
 	int nr_worker_threads;
 
+#ifndef NUMA_CACHE
+	/* wokers sleep on this and signaled by tgtd */
+	pthread_cond_t pending_cond;
+	/* locked by tgtd and workers */
+	pthread_mutex_t pending_lock;
+	/* protected by pending_lock */
+	struct list_head pending_list;
+#else
 	int nr_numa_nodes;
 	int thr_node_id;	/* current thread node id for numa */
 
@@ -42,7 +51,7 @@ struct bs_thread_info {
 	pthread_mutex_t pending_lock[MAX_NR_NUMA_NODES];
 	/* protected by pending_lock */
 	struct list_head pending_list[MAX_NR_NUMA_NODES];
-
+#endif
 	pthread_mutex_t startup_lock;
 
 	int stop;

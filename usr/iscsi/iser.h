@@ -24,8 +24,9 @@
 #define ISER_H
 
 #include "iscsid.h"
+#ifdef NUMA_CACHE
 #include "bs_thread.h"
-
+#endif
 /*
  * The IB-extended version from the kernel.  Stags and VAs are in
  * big-endian format.
@@ -68,12 +69,30 @@ struct iser_work_req {
 	struct iser_task *task;
 	enum iser_ib_op_code iser_ib_op;
 	struct ibv_sge sge;
+#ifdef NUMA_CACHE
 	struct ibv_sge numa_sge[MAX_NR_NUMA_NODES];
+#endif
 	union {
 		struct ibv_recv_wr recv_wr;
 		struct ibv_send_wr send_wr;
 	};
 };
+
+#ifndef NUMA_CACHE
+/*
+ * Pre-registered memory.  Buffers are allocated by iscsi from us, handed
+ * to device to fill, then iser can send them directly without registration.
+ * Also for write path.
+ */
+struct iser_membuf {
+	void *addr;
+	unsigned size;
+	unsigned offset; /* offset within task data */
+	struct list_head task_list;
+	int rdma;
+	struct list_head pool_list;
+};
+#endif
 
 struct iser_pdu {
 	struct iser_hdr *iser_hdr;
@@ -238,8 +257,10 @@ struct iser_device {
 	void *membuf_regbuf;
 	void *membuf_listbuf;
 	struct ibv_mr *membuf_mr;
+#ifdef NUMA_CACHE
 	void *numa_membuf_regbuf[MAX_NR_NUMA_NODES];
 	struct ibv_mr *numa_membuf_mr[MAX_NR_NUMA_NODES];
+#endif
 	int waiting_for_mem;
 
 	/* shared memory identifier */

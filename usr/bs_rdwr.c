@@ -40,9 +40,13 @@
 #include "scsi.h"
 #include "spc.h"
 #include "bs_thread.h"
+#ifdef NUMA_CACHE
 #include "cache.h"
+#endif
 
+#ifdef NUMA_CACHE
 extern struct host_cache hc;
+#endif
 
 static void set_medium_error(int *result, uint8_t *key, uint16_t *asc)
 {
@@ -77,15 +81,18 @@ static void bs_rdwr_request(struct scsi_cmd *cmd)
 	int i;
 	char *ptr;
 
+#ifdef NUMA_CACHE
 	struct sub_io_request *ior;
 	struct cache_block *cb;
 	struct numa_cache *nc;
 	int sio_size;
-
+#endif
 	ret = length = 0;
 	key = asc = 0;
 
+#ifdef NUMA_CACHE
 	dprintf("numa cache: cmd is %d\n", cmd->scb[0]);
+#endif
 	switch (cmd->scb[0])
 	{
 	case ORWRITE_16:
@@ -183,6 +190,38 @@ static void bs_rdwr_request(struct scsi_cmd *cmd)
 	case WRITE_12:
 	case WRITE_16:
 write:
+#ifndef NUMA_CACHE
+		length = scsi_get_out_length(cmd);
+		ret = pwrite64(fd, scsi_get_out_buffer(cmd), length,
+			       offset);
+		if (ret == length) {
+			struct mode_pg *pg;
+			/*
+			 * it would be better not to access to pg
+			 * directy.
+			 */
+
+			pg = find_mode_page(cmd->dev, 0x08, 0);
+			if (pg == NULL) {
+				result = SAM_STAT_CHECK_CONDITION;
+				key = ILLEGAL_REQUEST;
+				asc = ASC_INVALID_FIELD_IN_CDB;
+				break;
+			}
+			if (((cmd->scb[0] != WRITE_6) && (cmd->scb[1] & 0x8)) ||
+			    !(pg->mode_data[0] & 0x04))
+				bs_sync_sync_range(cmd, length, &result, &key,
+						   &asc);
+		} else
+			set_medium_error(&result, &key, &asc);
+
+		if ((cmd->scb[0] != WRITE_6) && (cmd->scb[1] & 0x10))
+			posix_fadvise(fd, offset, length,
+				      POSIX_FADV_NOREUSE);
+
+		if (do_verify)
+			goto verify;
+#else
 		dprintf("numa cache: =================================\n");
 		dprintf("numa cache: start serve an WRITE io request\n");
 
@@ -201,40 +240,13 @@ write:
 			dprintf("numa cache: write data: %d bytes\n", \
 				ior->length);
 			ret = pwrite64(fd, scsi_get_out_buffer(cmd) + (uint64_t) ior->m_offset, ior->length, ior->offset + (uint64_t) ior->in_offset);
-			/*
-
-		if (ret == ior->length) {
-			struct mode_pg *pg;
-
-			 * it would be better not to access to pg
-			 * directy.
-
-			pg = find_mode_page(cmd->dev, 0x08, 0);
-			if (pg == NULL) {
-				result = SAM_STAT_CHECK_CONDITION;
-				key = ILLEGAL_REQUEST;
-				asc = ASC_INVALID_FIELD_IN_CDB;
-				break;
-			}
-			if (((cmd->scb[0] != WRITE_6) && (cmd->scb[1] & 0x8)) ||
-			    !(pg->mode_data[0] & 0x04))
-				bs_sync_sync_range(cmd, ior->length, &result, &key,
-						   &asc);
-		} else
-			set_medium_error(&result, &key, &asc);
-
-		if ((cmd->scb[0] != WRITE_6) && (cmd->scb[1] & 0x10))
-			posix_fadvise(fd, ior->offset + ior->in_offset, ior->length,
-				      POSIX_FADV_NOREUSE);
-			 */
-		/* if (do_verify)	 do not support yet 
-			goto verify; */
 
 			nc_mutex_unlock(&(nc->mutex));
 		}
 
 		dprintf("numa cache: finish serve an io request\n");
 		dprintf("numa cache: --------------------------------\n");
+#endif
 
 		break;
 	case WRITE_SAME:
@@ -278,6 +290,18 @@ write:
 	case READ_10:
 	case READ_12:
 	case READ_16:
+#ifndef NUMA_CACHE
+		length = scsi_get_in_length(cmd);
+		ret = pread64(fd, scsi_get_in_buffer(cmd), length,
+			      offset);
+
+		if (ret != length)
+			set_medium_error(&result, &key, &asc);
+
+		if ((cmd->scb[0] != READ_6) && (cmd->scb[1] & 0x10))
+			posix_fadvise(fd, offset, length,
+				      POSIX_FADV_NOREUSE);
+#else
 		/* length = scsi_get_in_length(cmd); */
 		dprintf("numa cache: =================================\n");
 		dprintf("numa cache: start serve an READ io request\n");
@@ -334,7 +358,7 @@ write:
 
 		dprintf("numa cache: finish serve an io request\n");
 		dprintf("numa cache: --------------------------------\n");
-
+#endif
 		break;
 	case PRE_FETCH_10:
 	case PRE_FETCH_16:
@@ -442,12 +466,22 @@ static int bs_rdwr_open(struct scsi_lu *lu, char *path, int *fd, uint64_t *size)
 {
 	uint32_t blksize = 0;
 
+#ifndef NUMA_CACHE
+	*fd = backed_file_open(path, O_RDWR|O_LARGEFILE|lu->bsoflags, size,
+				&blksize);
+#else
 	*fd = backed_file_open(path, O_RDWR|O_LARGEFILE|O_DIRECT|lu->bsoflags, size,
 				&blksize);
+#endif
 	/* If we get access denied, try opening the file in readonly mode */
 	if (*fd == -1 && (errno == EACCES || errno == EROFS)) {
+#ifndef NUMA_CACHE
+		*fd = backed_file_open(path, O_RDONLY|O_LARGEFILE|lu->bsoflags,
+				       size, &blksize);
+#else
 		*fd = backed_file_open(path, O_RDONLY|O_LARGEFILE|O_DIRECT|lu->bsoflags,
 				       size, &blksize);
+#endif
 		lu->attrs.readonly = 1;
 	}
 	if (*fd < 0)

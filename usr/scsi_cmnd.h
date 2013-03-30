@@ -17,6 +17,7 @@ struct scsi_data_buffer {
 	uint64_t buffer;
 };
 
+#ifdef NUMA_CACHE
 struct sub_io_request {
 	int tid;		/* target id */
 	uint64_t lun;		/* logical unit number */
@@ -28,6 +29,7 @@ struct sub_io_request {
 	uint64_t cb_id;		/* cache block id */
 	int nc_id;		/* NUMA cache id */
 };
+#endif
 
 struct scsi_cmd {
 	struct target *c_target;
@@ -35,7 +37,9 @@ struct scsi_cmd {
 	struct list_head c_hlist;
 	struct list_head qlist;
 
+#ifdef NUMA_CACHE
 	int tid;
+#endif
 	uint64_t dev_id;
 
 	struct scsi_lu *dev;
@@ -55,18 +59,22 @@ struct scsi_cmd {
 	uint64_t tag;
 	int result;
 	struct mgmt_req *mreq;
+#ifdef NUMA_CACHE
 	int nr_sior;
 	struct sub_io_request sior[1024];
+#endif
 
 	unsigned char sense_buffer[SCSI_SENSE_BUFFERSIZE];
 	int sense_len;
 
+#ifdef NUMA_CACHE
 	int nodeid;	/* for numa node id */
 	int rdma;
-
+#endif
 	struct list_head bs_list;
+#ifdef NUMA_CACHE
 	void *netbuf;
-
+#endif
 	struct it_nexus *it_nexus;
 	struct it_nexus_lu_info *itn_lu_info;
 };

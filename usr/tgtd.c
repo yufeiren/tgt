@@ -41,10 +41,14 @@
 #include "driver.h"
 #include "work.h"
 #include "util.h"
+#ifdef NUMA_CACHE
 #include "cache.h"
+#endif
 
 unsigned long pagesize, pageshift;
+#ifdef NUMA_CACHE
 struct host_cache hc;
+#endif
 
 int system_active = 1;
 static int ep_fd;
@@ -59,13 +63,19 @@ static struct option const long_options[] = {
 	{"debug", required_argument, 0, 'd'},
 	{"version", no_argument, 0, 'V'},
 	{"help", no_argument, 0, 'h'},
+#ifdef NUMA_CACHE
 	{"cache_size", required_argument, 0, 's'},
 	{"cache_bs", required_argument, 0, 'c'},
 	{"cache_way", required_argument, 0, 'w'},
+#endif
 	{0, 0, 0, 0},
 };
 
+#ifndef NUMA_CACHE
+static char *short_options = "fC:d:t:Vh";
+#else
 static char *short_options = "fC:d:t:Vhs:c:w:";
+#endif
 static char *spare_args;
 
 static void usage(int status)
@@ -82,8 +92,8 @@ static void usage(int status)
 		"-C, --control-port NNNN use port NNNN for the mgmt channel\n"
 		"-t, --nr_iothreads NNNN specify the number of I/O threads\n"
 		"-s, --cache_size NNNN   specify the size of numa-aware cache for each numa node\n"
-		"-c, --cache_bs NNNN     specify the size of cache block\n"
-		"-w, --cache-way NNNN    specify number of numa cache per node\n"
+		"-c, --cache_bs NNNN     specify the size of numa-aware cache block\n"
+		"-w, --cache-way NNNN    specify number of numa-aware cache per node\n"
 		"-d, --debug debuglevel  print debugging information\n"
 		"-V, --version           print version and exit\n"
 		"-h, --help              display this help and exit\n",
@@ -514,8 +524,9 @@ int main(int argc, char **argv)
 	int err, ch, longindex, nr_lld = 0;
 	int is_daemon = 1, is_debug = 0;
 	int ret;
+#ifdef NUMA_CACHE
 	struct cache_param cp;
-
+#endif
 	sa_new.sa_handler = signal_catch;
 	sigemptyset(&sa_new.sa_mask);
 	sa_new.sa_flags = 0;

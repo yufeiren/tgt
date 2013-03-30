@@ -42,7 +42,9 @@
 #include "driver.h"
 #include "scsi.h"
 #include "work.h"
+#ifdef NUMA_CACHE
 #include "cache.h"
+#endif
 
 #if defined(HAVE_VALGRIND) && !defined(NDEBUG)
 #include <valgrind/memcheck.h>
@@ -50,7 +52,9 @@
 #define VALGRIND_MAKE_MEM_DEFINED(addr, len)
 #endif
 
+#ifdef NUMA_CACHE
 extern struct host_cache hc;
+#endif
 
 static struct iscsi_transport iscsi_iser;
 
@@ -272,6 +276,7 @@ static void iser_rdmad_init(struct iser_work_req *rdmad,
 	INIT_LIST_HEAD(&rdmad->wr_list);
 }
 
+#ifdef NUMA_CACHE
 static void iser_rdmad_init_numa(struct iser_work_req *rdmad,
 				 struct iser_task *task,
 				 struct ibv_mr *srmr,
@@ -279,6 +284,7 @@ static void iser_rdmad_init_numa(struct iser_work_req *rdmad,
 {
 	rdmad->numa_sge[numa_node].lkey = srmr->lkey;
 }
+#endif
 
 static void iser_task_init(struct iser_task *task,
 			   struct iser_conn *conn,
@@ -295,9 +301,11 @@ static void iser_task_init(struct iser_task *task,
 	iser_rxd_init(&task->rxd, task, pdu_buf, buf_size, srmr);
 	iser_txd_init(&task->txd, task, pdu_buf, buf_size, srmr);
 	iser_rdmad_init(&task->rdmad, task, conn->dev->membuf_mr);
+#ifdef NUMA_CACHE
 	for (i = 0; i < hc.nr_numa_nodes; i ++) {
 		iser_rdmad_init_numa(&task->rdmad, task, conn->dev->numa_membuf_mr[i], i);
 	}
+#endif
 
 	INIT_LIST_HEAD(&task->in_buf_list);
 	INIT_LIST_HEAD(&task->out_buf_list);
@@ -430,12 +438,15 @@ static void iser_prep_rdma_wr_send_req(struct iser_task *task,
 	rdma_buf = list_first_entry(&task->in_buf_list, struct iser_membuf, task_list);
 	rdmad->sge.addr = uint64_from_ptr(rdma_buf->addr);
 
+#ifdef NUMA_CACHE
 	if (task->is_read || task->is_write) {
-		dprintf("numa cache: change addr to numa node %d\n", rdma_buf->cur_node);
+		dprintf("numa cache: change addr to numa node %d\n", \
+			rdma_buf->cur_node);
 		rdmad->sge.addr = uint64_from_ptr(rdma_buf->numa_addr[rdma_buf->cur_node]);
-	/* update lkey for numa-aware */
+		/* update lkey for numa-aware */
 		rdmad->sge.lkey = rdmad->numa_sge[rdma_buf->cur_node].lkey;
 	}
+#endif
 
 	if (likely(task->rdma_wr_remains <= rdma_buf->size)) {
 		rdmad->sge.length = task->rdma_wr_remains;
@@ -676,21 +687,8 @@ static int iser_init_rdma_buf_pool(struct iser_device *dev)
 	dev->membuf_listbuf = list_buf;
 	INIT_LIST_HEAD(&dev->membuf_free);
 	INIT_LIST_HEAD(&dev->membuf_alloc);
-	/*
-	for (i = 0; i < membuf_num; i++) {
-		rdma_buf = (void *) list_buf;
-		list_buf += sizeof(*rdma_buf);
 
-		list_add_tail(&rdma_buf->pool_list, &dev->membuf_free);
-		INIT_LIST_HEAD(&rdma_buf->task_list);
-		rdma_buf->addr = pool_buf;
-		rdma_buf->size = membuf_size;
-		rdma_buf->rdma = 1;
-
-		pool_buf += membuf_size;
-	}
-	*/
-
+#ifdef NUMA_CACHE
 	struct bitmask *nodemask;
 	nodemask = numa_get_run_node_mask();
 	/* each numa node alloc pool_size memory */
@@ -731,6 +729,7 @@ static int iser_init_rdma_buf_pool(struct iser_device *dev)
 	}
 
 	numa_run_on_node_mask(nodemask);
+#endif
 
 	for (i = 0; i < membuf_num; i++) {
 		rdma_buf = (void *) list_buf;
@@ -739,9 +738,11 @@ static int iser_init_rdma_buf_pool(struct iser_device *dev)
 		list_add_tail(&rdma_buf->pool_list, &dev->membuf_free);
 		INIT_LIST_HEAD(&rdma_buf->task_list);
 
+#ifdef NUMA_CACHE
 		for (j = 0; j < hc.nr_numa_nodes; j ++) {
 			rdma_buf->numa_addr[j] = dev->numa_membuf_regbuf[j] + membuf_size * i;
 		}
+#endif
 
 		rdma_buf->addr = pool_buf;
 		rdma_buf->size = membuf_size;
@@ -2128,9 +2129,10 @@ static void iser_scsi_cmd_iosubmit(struct iser_task *task, int not_last)
 	scmd->mreq = NULL;
 	scmd->sense_len = 0;
 
+#ifdef NUMA_CACHE
 	scmd->netbuf = data_buf;
 	scmd->rdma = 1;
-
+#endif
 	dprintf("task:%p tag:0x%04"PRIx64 "\n", task, task->tag);
 
 	set_task_in_scsi(task);
