@@ -1,6 +1,7 @@
 /*
- * Synchronous I/O file backing store routine
+ * Synchronous rbd image backing store routine
  *
+ * modified from bs_rdrw.c:
  * Copyright (C) 2006-2007 FUJITA Tomonori <tomof@acm.org>
  * Copyright (C) 2006-2007 Mike Christie <michaelc@cs.wisc.edu>
  *
@@ -40,13 +41,52 @@
 #include "scsi.h"
 #include "spc.h"
 #include "bs_thread.h"
-#ifdef NUMA_CACHE
-#include "cache.h"
-#endif
 
-#ifdef NUMA_CACHE
-extern struct host_cache hc;
-#endif
+#include "rados/librados.h"
+#include "rbd/librbd.h"
+
+/* one cluster connection only */
+rados_t cluster;
+
+struct active_rbd {
+	char *poolname;
+	char *imagename;
+	char *snapname;
+	rados_ioctx_t ioctx;
+	rbd_image_t rbd_image;
+};
+
+#define MAX_IMAGES	20
+struct active_rbd active_rbds[MAX_IMAGES];
+
+#define RBDP(fd)	(&active_rbds[fd])
+
+static void parse_imagepath(char *path, char **pool, char **image, char **snap)
+{
+	char *origp = strdup(path);
+	char *p, *sep;
+
+	p = origp;
+	sep = strchr(p, '/');
+	if (sep == NULL) {
+		*pool = "rbd";
+	} else {
+		*sep = '\0';
+		*pool = strdup(p);
+		p = sep + 1;
+	}
+	/* p points to image[@snap] */
+	sep = strchr(p, '@');
+	if (sep == NULL) {
+		*snap = "";
+	} else {
+		*snap = strdup(sep + 1);
+		*sep = '\0';
+	}
+	/* p points to image\0 */
+	*image = strdup(p);
+	free(origp);
+}
 
 static void set_medium_error(int *result, uint8_t *key, uint16_t *asc)
 {
@@ -60,19 +100,26 @@ static void bs_sync_sync_range(struct scsi_cmd *cmd, uint32_t length,
 {
 	int ret;
 
-	ret = fdatasync(cmd->dev->fd);
+	ret = rbd_flush(RBDP(cmd->dev->fd)->rbd_image);
 	if (ret)
 		set_medium_error(result, key, asc);
 }
 
-static void bs_rdwr_request(struct scsi_cmd *cmd)
+static void bs_rbd_request(struct scsi_cmd *cmd)
 {
-	int ret, fd = cmd->dev->fd;
+	int ret;
 	uint32_t length;
 	int result = SAM_STAT_GOOD;
 	uint8_t key;
 	uint16_t asc;
+#if 0
+	/*
+	 * This should go in the sense data on error for COMPARE_AND_WRITE, but
+	 * there doesn't seem to be any attempt to do so...
+	 */
+
 	uint32_t info = 0;
+#endif
 	char *tmpbuf;
 	size_t blocksize;
 	uint64_t offset = cmd->offset;
@@ -81,22 +128,11 @@ static void bs_rdwr_request(struct scsi_cmd *cmd)
 	int i;
 	char *ptr;
 	const char *write_buf = NULL;
-
-#ifdef NUMA_CACHE
-	struct sub_io_request *ior;
-	struct cache_block *cb;
-	struct numa_cache *nc;
-	int sio_size;
-#endif
-
 	ret = length = 0;
 	key = asc = 0;
+	struct active_rbd *rbd = RBDP(cmd->dev->fd);
 
-#ifdef NUMA_CACHE
-	dprintf("numa cache: cmd is %x\n", cmd->scb[0]);
-#endif
-	switch (cmd->scb[0])
-	{
+	switch (cmd->scb[0]) {
 	case ORWRITE_16:
 		length = scsi_get_out_length(cmd);
 
@@ -108,7 +144,7 @@ static void bs_rdwr_request(struct scsi_cmd *cmd)
 			break;
 		}
 
-		ret = pread64(fd, tmpbuf, length, offset);
+		ret = rbd_read(rbd->rbd_image, offset, length, tmpbuf);
 
 		if (ret != length) {
 			set_medium_error(&result, &key, &asc);
@@ -145,7 +181,7 @@ static void bs_rdwr_request(struct scsi_cmd *cmd)
 			break;
 		}
 
-		ret = pread64(fd, tmpbuf, length, offset);
+		ret = rbd_read(rbd->rbd_image, offset, length, tmpbuf);
 
 		if (ret != length) {
 			set_medium_error(&result, &key, &asc);
@@ -167,7 +203,10 @@ static void bs_rdwr_request(struct scsi_cmd *cmd)
 			for (pos = 0; pos < length && *spos++ == *dpos++;
 			     pos++)
 				;
+#if 0
+			/* See comment above at declaration */
 			info = pos;
+#endif
 			result = SAM_STAT_CHECK_CONDITION;
 			key = MISCOMPARE;
 			asc = ASC_MISCOMPARE_DURING_VERIFY_OPERATION;
@@ -175,10 +214,7 @@ static void bs_rdwr_request(struct scsi_cmd *cmd)
 			break;
 		}
 
-		if (cmd->scb[1] & 0x10)
-			posix_fadvise(fd, offset, length,
-				      POSIX_FADV_NOREUSE);
-
+		/* no DPO bit (cache retention advice) support */
 		free(tmpbuf);
 
 		write_buf = scsi_get_out_buffer(cmd) + length;
@@ -203,19 +239,17 @@ static void bs_rdwr_request(struct scsi_cmd *cmd)
 	case WRITE_10:
 	case WRITE_12:
 	case WRITE_16:
-#ifndef NUMA_CACHE
 		length = scsi_get_out_length(cmd);
 		write_buf = scsi_get_out_buffer(cmd);
 write:
-		ret = pwrite64(fd, write_buf, length,
-			       offset);
+		ret = rbd_write(rbd->rbd_image, offset, length, write_buf);
 		if (ret == length) {
 			struct mode_pg *pg;
+
 			/*
 			 * it would be better not to access to pg
 			 * directy.
 			 */
-
 			pg = find_mode_page(cmd->dev, 0x08, 0);
 			if (pg == NULL) {
 				result = SAM_STAT_CHECK_CONDITION;
@@ -230,45 +264,14 @@ write:
 		} else
 			set_medium_error(&result, &key, &asc);
 
-		if ((cmd->scb[0] != WRITE_6) && (cmd->scb[1] & 0x10))
-			posix_fadvise(fd, offset, length,
-				      POSIX_FADV_NOREUSE);
-
 		if (do_verify)
 			goto verify;
-#else
-		dprintf("numa cache: =================================\n");
-		dprintf("numa cache: start serve an WRITE io request\n");
-
-		for (i = 0; i < cmd->nr_sior; i ++) {
-			dprintf("numa cache: sub request %d\n", i);
-			ior = &(cmd->sior[i]);
-			nc = &(hc.nc[ior->nc_id]);
-
-			nc_mutex_lock(&(nc->mutex));
-
-			/* if block is in cache, invalidate it */
-			invalidate_cache_block(ior->tid, ior->lun, \
-					       ior->cb_id, nc);
-
-			/* write memory data into disk */
-			dprintf("numa cache: write data: %d bytes\n", \
-				ior->length);
-			ret = pwrite64(fd, scsi_get_out_buffer(cmd) + (uint64_t) ior->m_offset, ior->length, ior->offset + (uint64_t) ior->in_offset);
-
-			nc_mutex_unlock(&(nc->mutex));
-		}
-
-		dprintf("numa cache: finish serve an io request\n");
-		dprintf("numa cache: --------------------------------\n");
-#endif
-
 		break;
 	case WRITE_SAME:
 	case WRITE_SAME_16:
 		/* WRITE_SAME used to punch hole in file */
 		if (cmd->scb[1] & 0x08) {
-			ret = unmap_file_region(fd, offset, tl);
+			ret = rbd_discard(rbd->rbd_image, offset, tl);
 			if (ret != 0) {
 				eprintf("Failed to punch hole for WRITE_SAME"
 					" command\n");
@@ -283,7 +286,7 @@ write:
 			blocksize = 1 << cmd->dev->blk_shift;
 			tmpbuf = scsi_get_out_buffer(cmd);
 
-			switch(cmd->scb[1] & 0x06) {
+			switch (cmd->scb[1] & 0x06) {
 			case 0x02: /* PBDATA==0 LBDATA==1 */
 				put_unaligned_be32(offset, tmpbuf);
 				break;
@@ -293,7 +296,8 @@ write:
 				break;
 			}
 
-			ret = pwrite64(fd, tmpbuf, blocksize, offset);
+			ret = rbd_write(rbd->rbd_image, offset, blocksize,
+					tmpbuf);
 			if (ret != blocksize)
 				set_medium_error(&result, &key, &asc);
 
@@ -305,83 +309,16 @@ write:
 	case READ_10:
 	case READ_12:
 	case READ_16:
-#ifndef NUMA_CACHE
 		length = scsi_get_in_length(cmd);
-		ret = pread64(fd, scsi_get_in_buffer(cmd), length,
-			      offset);
+		ret = rbd_read(rbd->rbd_image, offset, length,
+			       scsi_get_in_buffer(cmd));
 
 		if (ret != length)
 			set_medium_error(&result, &key, &asc);
 
-		if ((cmd->scb[0] != READ_6) && (cmd->scb[1] & 0x10))
-			posix_fadvise(fd, offset, length,
-				      POSIX_FADV_NOREUSE);
-#else
-		/* length = scsi_get_in_length(cmd); */
-		dprintf("numa cache: =================================\n");
-		dprintf("numa cache: start serve an READ io request\n");
-
-		for (i = 0; i < cmd->nr_sior; i ++) {
-			dprintf("numa cache: sub request %d\n", i);
-			ior = &(cmd->sior[i]);
-			nc = &(hc.nc[ior->nc_id]);
-
-			nc_mutex_lock(&(nc->mutex));
-
-			/* chech if block is in cache */
-			cb = get_cache_block(ior->tid, ior->lun, \
-					     ior->cb_id, nc);
-			if (cb->is_valid == CACHE_VALID) {	/* hit */
-				dprintf("numa cache: cache hit\n");
-				memcpy(scsi_get_in_buffer(cmd) + ior->m_offset, cb->addr + ior->in_offset, ior->length);
-				nc_mutex_unlock(&(nc->mutex));
-				continue;
-			}
-
-			dprintf("numa cache: cache not hit\n");
-			/* not hit */
-			/* load data (cache block) into cache memory */
-			if ((ior->offset + cb->cbs) < cmd->dev->size)
-				sio_size = cb->cbs;
-			else
-				sio_size = cmd->dev->size - ior->offset - (uint64_t) ior->in_offset;
-			dprintf("numa cache: pread data %d bytes offset %ld\n", sio_size, ior->offset);
-			ret = pread64(fd, cb->addr, sio_size, ior->offset);
-			if (ret != cb->cbs)
-				set_medium_error(&result, &key, &asc);
-
-			if ((cmd->scb[0] != READ_6) && (cmd->scb[1] & 0x10))
-				posix_fadvise(fd, ior->offset, ior->length,
-					      POSIX_FADV_NOREUSE);
-
-			/* copy data into memory */
-			dprintf("numa cache: copy data into memory\n");
-			dprintf("numa cache: memcpy %" PRId64 " %" PRId64 " %d\n", scsi_get_in_buffer(cmd) + (uint64_t) ior->m_offset, cb->addr + ((uint64_t) ior->in_offset), ior->length);
-			memcpy(scsi_get_in_buffer(cmd) + (uint64_t) ior->m_offset, cb->addr + ((uint64_t) ior->in_offset), ior->length);
-
-			/* update cb into cache */
-			cb->is_valid = CACHE_VALID;
-			cb->cb_id = ior->cb_id;
-			cb->dev_id = ior->dev_id;
-			cb->tid = ior->tid;
-			cb->lun = ior->lun;
-
-			dprintf("numa cache: insert cache block\n");
-			insert_cache_block(cb, nc);
-			nc_mutex_unlock(&(nc->mutex));
-		}
-
-		dprintf("numa cache: finish serve an io request\n");
-		dprintf("numa cache: --------------------------------\n");
-#endif
 		break;
 	case PRE_FETCH_10:
 	case PRE_FETCH_16:
-		ret = posix_fadvise(fd, offset, cmd->tl,
-				POSIX_FADV_WILLNEED);
-
-		if (ret != 0)
-			set_medium_error(&result, &key, &asc);
 		break;
 	case VERIFY_10:
 	case VERIFY_12:
@@ -397,7 +334,7 @@ verify:
 			break;
 		}
 
-		ret = pread64(fd, tmpbuf, length, offset);
+		ret = rbd_read(rbd->rbd_image, offset, length, tmpbuf);
 
 		if (ret != length)
 			set_medium_error(&result, &key, &asc);
@@ -406,10 +343,6 @@ verify:
 			key = MISCOMPARE;
 			asc = ASC_MISCOMPARE_DURING_VERIFY_OPERATION;
 		}
-
-		if (cmd->scb[1] & 0x10)
-			posix_fadvise(fd, offset, length,
-				      POSIX_FADV_NOREUSE);
 
 		free(tmpbuf);
 		break;
@@ -446,7 +379,8 @@ verify:
 			}
 
 			if (tl > 0) {
-				if (unmap_file_region(fd, offset, tl) != 0) {
+				if (rbd_discard(rbd->rbd_image, offset, tl)
+				    != 0) {
 					eprintf("Failed to punch hole for"
 						" UNMAP at offset:%" PRIu64
 						" length:%d\n",
@@ -477,30 +411,53 @@ verify:
 	}
 }
 
-static int bs_rdwr_open(struct scsi_lu *lu, char *path, int *fd, uint64_t *size)
+
+static int bs_rbd_open(struct scsi_lu *lu, char *path, int *fd, uint64_t *size)
 {
 	uint32_t blksize = 0;
+	int ret;
+	rbd_image_info_t inf;
+	char *poolname;
+	char *imagename;
+	char *snapname;
+	struct active_rbd *rbd = NULL;
+	int lfd;
 
-#ifndef NUMA_CACHE
-	*fd = backed_file_open(path, O_RDWR|O_LARGEFILE|lu->bsoflags, size,
-				&blksize);
-#else
-	*fd = backed_file_open(path, O_RDWR|O_LARGEFILE|O_DIRECT|lu->bsoflags, size,
-				&blksize);
-#endif
-	/* If we get access denied, try opening the file in readonly mode */
-	if (*fd == -1 && (errno == EACCES || errno == EROFS)) {
-#ifndef NUMA_CACHE
-		*fd = backed_file_open(path, O_RDONLY|O_LARGEFILE|lu->bsoflags,
-				       size, &blksize);
-#else
-		*fd = backed_file_open(path, O_RDONLY|O_LARGEFILE|O_DIRECT|lu->bsoflags,
-				       size, &blksize);
-#endif
-		lu->attrs.readonly = 1;
+	parse_imagepath(path, &poolname, &imagename, &snapname);
+	for (lfd = 0; lfd < MAX_IMAGES; lfd++) {
+		if (active_rbds[lfd].rbd_image == NULL) {
+			rbd = &active_rbds[lfd];
+			*fd = lfd;
+			break;
+		}
 	}
-	if (*fd < 0)
-		return *fd;
+	if (!rbd) {
+		*fd = -1;
+		return -EMFILE;
+	}
+
+	rbd->poolname = poolname;
+	rbd->imagename = imagename;
+	rbd->snapname = snapname;
+	eprintf("bs_rbd_open: pool: %s image: %s snap: %s\n",
+		poolname, imagename, snapname);
+
+	if ((ret == rados_ioctx_create(cluster, poolname, &rbd->ioctx)) < 0) {
+		eprintf("bs_rbd_open: rados_ioctx_create: %d\n", ret);
+		return -EIO;
+	}
+	/* null snap name */
+	ret = rbd_open(rbd->ioctx, imagename, &rbd->rbd_image, snapname);
+	if (ret < 0) {
+		eprintf("bs_rbd_open: rbd_open: %d\n", ret);
+		return ret;
+	}
+	if (rbd_stat(rbd->rbd_image, &inf, sizeof(inf)) < 0) {
+		eprintf("bs_rbd_open: rbd_stat: %d\n", ret);
+		return ret;
+	}
+	*size = inf.size;
+	blksize = inf.obj_size;
 
 	if (!lu->attrs.no_auto_lbppbe)
 		update_lbppbe(lu, blksize);
@@ -508,37 +465,72 @@ static int bs_rdwr_open(struct scsi_lu *lu, char *path, int *fd, uint64_t *size)
 	return 0;
 }
 
-static void bs_rdwr_close(struct scsi_lu *lu)
+static void bs_rbd_close(struct scsi_lu *lu)
 {
-	close(lu->fd);
+	struct active_rbd *rbd = RBDP(lu->fd);
+
+	if (rbd->rbd_image) {
+		rbd_close(rbd->rbd_image);
+		rados_ioctx_destroy(rbd->ioctx);
+		rbd->rbd_image = rbd->ioctx = NULL;
+	}
 }
 
-static tgtadm_err bs_rdwr_init(struct scsi_lu *lu)
+static tgtadm_err bs_rbd_init(struct scsi_lu *lu)
 {
+	tgtadm_err ret = TGTADM_UNKNOWN_ERR;
+	int rados_ret;
 	struct bs_thread_info *info = BS_THREAD_I(lu);
 
-	return bs_thread_open(info, bs_rdwr_request, nr_iothreads);
+	rados_ret = rados_create(&cluster, NULL);
+	if (rados_ret < 0) {
+		eprintf("bs_rbd_init: rados_create: %d\n", rados_ret);
+		return ret;
+	}
+	/* read config from environment and then default files */
+	rados_ret = rados_conf_parse_env(cluster, NULL);
+	if (rados_ret < 0) {
+		eprintf("bs_rbd_init: rados_conf_parse_env: %d\n", rados_ret);
+		goto fail;
+	}
+	rados_ret = rados_conf_read_file(cluster, NULL);
+	if (rados_ret < 0) {
+		eprintf("bs_rbd_init: rados_conf_read_file: %d\n", rados_ret);
+		goto fail;
+	}
+	rados_ret = rados_connect(cluster);
+	if (rados_ret < 0) {
+		eprintf("bs_rbd_init: rados_connect: %d\n", rados_ret);
+		goto fail;
+	}
+	ret = bs_thread_open(info, bs_rbd_request, nr_iothreads);
+	if (ret == TGTADM_SUCCESS)
+		return ret;
+fail:
+	rados_shutdown(&cluster);
+	return ret;
 }
 
-static void bs_rdwr_exit(struct scsi_lu *lu)
+static void bs_rbd_exit(struct scsi_lu *lu)
 {
 	struct bs_thread_info *info = BS_THREAD_I(lu);
 
 	bs_thread_close(info);
+	rados_shutdown(&cluster);
 }
 
-static struct backingstore_template rdwr_bst = {
-	.bs_name		= "rdwr",
+static struct backingstore_template rbd_bst = {
+	.bs_name		= "rbd",
 	.bs_datasize		= sizeof(struct bs_thread_info),
-	.bs_open		= bs_rdwr_open,
-	.bs_close		= bs_rdwr_close,
-	.bs_init		= bs_rdwr_init,
-	.bs_exit		= bs_rdwr_exit,
+	.bs_open		= bs_rbd_open,
+	.bs_close		= bs_rbd_close,
+	.bs_init		= bs_rbd_init,
+	.bs_exit		= bs_rbd_exit,
 	.bs_cmd_submit		= bs_thread_cmd_submit,
 	.bs_oflags_supported    = O_SYNC | O_DIRECT,
 };
 
-__attribute__((constructor)) static void bs_rdwr_constructor(void)
+static __attribute__((constructor)) void bs_rbd_constructor(void)
 {
-	register_backingstore_template(&rdwr_bst);
+	register_backingstore_template(&rbd_bst);
 }

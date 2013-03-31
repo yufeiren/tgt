@@ -104,6 +104,7 @@ struct iscsi_sense_data {
 } __packed;
 
 static size_t buf_pool_sz_mb = DEFAULT_POOL_SIZE_MB;
+static int cq_vector = -1;
 
 static int membuf_num;
 static size_t membuf_size = RDMA_TRANSFER_SIZE;
@@ -2099,7 +2100,6 @@ static void iser_scsi_cmd_iosubmit(struct iser_task *task, int not_last)
 	scsi_set_out_length(scmd, 0);
 
 	if (task->is_write) {
-		scsi_set_out_resid(scmd, 0);
 		/* It's either the last buffer, which is RDMA,
 		   or the only buffer */
 		data_buf = list_entry(task->out_buf_list.prev,
@@ -2122,7 +2122,6 @@ static void iser_scsi_cmd_iosubmit(struct iser_task *task, int not_last)
 		scsi_set_out_length(scmd, task->out_len);
 	}
 	if (task->is_read) {
-		scsi_set_in_resid(scmd, 0);
 		/* ToDo: multiple RDMA-Read buffers */
 		data_buf = list_entry(task->in_buf_list.next,
 				      struct iser_membuf, task_list);
@@ -2152,32 +2151,6 @@ static void iser_scsi_cmd_iosubmit(struct iser_task *task, int not_last)
 	target_cmd_queue(session->target->tid, scmd);
 }
 
-static void iser_rsp_set_read_resid(struct iscsi_cmd_rsp *rsp_bhs,
-				    int in_resid)
-{
-	if (in_resid > 0) {
-		rsp_bhs->flags |= ISCSI_FLAG_CMD_UNDERFLOW;
-		rsp_bhs->residual_count = cpu_to_be32((uint32_t)in_resid);
-	} else {
-		rsp_bhs->flags |= ISCSI_FLAG_CMD_OVERFLOW;
-		rsp_bhs->residual_count = cpu_to_be32(((uint32_t)-in_resid));
-	}
-	rsp_bhs->bi_residual_count = 0;
-}
-
-static void iser_rsp_set_bidir_resid(struct iscsi_cmd_rsp *rsp_bhs,
-				     int in_resid)
-{
-	if (in_resid > 0) {
-		rsp_bhs->flags |= ISCSI_FLAG_CMD_BIDI_UNDERFLOW;
-		rsp_bhs->bi_residual_count = cpu_to_be32((uint32_t)in_resid);
-	} else {
-		rsp_bhs->flags |= ISCSI_FLAG_CMD_BIDI_OVERFLOW;
-		rsp_bhs->bi_residual_count = cpu_to_be32(((uint32_t)-in_resid));
-	}
-	rsp_bhs->residual_count = 0;
-}
-
 static int iser_scsi_cmd_done(uint64_t nid, int result,
 			      struct scsi_cmd *scmd)
 {
@@ -2187,7 +2160,6 @@ static int iser_scsi_cmd_done(uint64_t nid, int result,
 	struct iser_conn *conn = task->conn;
 	struct iscsi_session *session = conn->h.session;
 	unsigned char sense_len = scmd->sense_len;
-	int in_resid;
 
 	assert(nid == scmd->cmd_itn_id);
 
@@ -2211,21 +2183,12 @@ static int iser_scsi_cmd_done(uint64_t nid, int result,
 	iser_set_rsp_stat_sn(session, task->pdu.bhs);
 	rsp_bhs->exp_datasn = 0;
 
+	iscsi_rsp_set_residual(rsp_bhs, scmd);
 	if (task->is_read) {
-		in_resid = scsi_get_in_resid(scmd);
-		if (in_resid != 0) {
-			if (!task->is_write)
-				iser_rsp_set_read_resid(rsp_bhs, in_resid);
-			else
-				iser_rsp_set_bidir_resid(rsp_bhs, in_resid);
-			if (in_resid > 0)
-				task->rdma_wr_remains = task->in_len - in_resid;
-		}
-		/* schedule_rdma_write(task, conn); // ToDo: need this? */
-	} else {
-		rsp_bhs->bi_residual_count = 0;
-		rsp_bhs->residual_count = 0;
+		task->rdma_wr_remains = scsi_get_in_transfer_len(scmd);
+		task->rdma_wr_sz = scsi_get_in_transfer_len(scmd);
 	}
+
 	task->pdu.ahssize = 0;
 	task->pdu.membuf.size = 0;
 
@@ -3409,8 +3372,18 @@ static int iser_device_init(struct iser_device *dev)
 		goto out;
 	}
 
+	/* verify cq_vector */
+	if (cq_vector < 0)
+		cq_vector = control_port % dev->ibv_ctxt->num_comp_vectors;
+	else if (cq_vector >= dev->ibv_ctxt->num_comp_vectors) {
+		eprintf("Bad CQ vector. max: %d\n",
+			dev->ibv_ctxt->num_comp_vectors);
+		goto out;
+	}
+	dprintf("CQ vector: %d\n", cq_vector);
+
 	dev->cq = ibv_create_cq(dev->ibv_ctxt, cqe_num, NULL,
-				dev->cq_channel, 0);
+				dev->cq_channel, cq_vector);
 	if (dev->cq == NULL) {
 		eprintf("ibv_create_cq failed\n");
 		goto out;
@@ -3626,6 +3599,7 @@ static const char *lld_param_nop = "nop";
 static const char *lld_param_on = "on";
 static const char *lld_param_off = "off";
 static const char *lld_param_pool_sz_mb = "pool_sz_mb";
+static const char *lld_param_cq_vector = "cq_vector";
 
 static int iser_param_parser(char *p)
 {
@@ -3664,6 +3638,16 @@ static int iser_param_parser(char *p)
 			buf_pool_sz_mb = atoi(q);
 			if (buf_pool_sz_mb < 128)
 				buf_pool_sz_mb = 128;
+		} else if (!strncmp(p, lld_param_cq_vector,
+				    strlen(lld_param_cq_vector))) {
+			q = p + strlen(lld_param_cq_vector) + 1;
+			cq_vector = atoi(q);
+			if (cq_vector < 0) {
+				eprintf("unsupported value for param: %s\n",
+					lld_param_cq_vector);
+				err = -EINVAL;
+				break;
+			}
 		} else {
 			dprintf("unsupported param:%s\n", p);
 			err = -EINVAL;

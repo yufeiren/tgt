@@ -24,9 +24,13 @@
 #define ISER_H
 
 #include "iscsid.h"
+
 #ifdef NUMA_CACHE
 #include "bs_thread.h"
 #endif
+
+extern short control_port;
+
 /*
  * The IB-extended version from the kernel.  Stags and VAs are in
  * big-endian format.

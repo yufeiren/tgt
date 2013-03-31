@@ -194,9 +194,10 @@ static void update_b0_opt_xfer_len(struct scsi_lu *lu, int opt_xfer_len)
 
 int spc_inquiry(int host_no, struct scsi_cmd *cmd)
 {
-	int len = 0, ret = SAM_STAT_CHECK_CONDITION;
+	int ret = SAM_STAT_CHECK_CONDITION;
 	uint8_t *data;
 	uint8_t *scb = cmd->scb;
+	uint32_t alloc_len, avail_len, actual_len;
 	unsigned char key = ILLEGAL_REQUEST;
 	uint16_t asc = ASC_INVALID_FIELD_IN_CDB;
 	uint8_t devtype = 0;
@@ -207,11 +208,13 @@ int spc_inquiry(int host_no, struct scsi_cmd *cmd)
 	if (!(scb[1] & 0x1) && scb[2])
 		goto sense;
 
-	if (scsi_get_in_length(cmd) < scb[4])
+	alloc_len = (uint32_t)get_unaligned_be16(&scb[3]);
+	if (scsi_get_in_length(cmd) < alloc_len)
 		goto sense;
 
 	memset(buf, 0, sizeof(buf));
 	data = buf;
+	avail_len = 0;
 
 	dprintf("%x %x\n", scb[1], scb[2]);
 
@@ -239,8 +242,8 @@ int spc_inquiry(int host_no, struct scsi_cmd *cmd)
 		for (i = 0; i < ARRAY_SIZE(attrs->version_desc); i++)
 			*desc++ = __cpu_to_be16(attrs->version_desc[i]);
 
-		len = 66;
-		data[4] = len - 5;	/* Additional Length */
+		avail_len = 66;
+		data[4] = avail_len - 5; /* Additional Length */
 		ret = SAM_STAT_GOOD;
 	} else if (scb[1] & 0x1) {
 		uint8_t pcode = scb[2];
@@ -263,7 +266,7 @@ int spc_inquiry(int host_no, struct scsi_cmd *cmd)
 			}
 			data[3] = cnt;
 			data[4] = 0x0;
-			len = cnt + 4;
+			avail_len = cnt + 4;
 			ret = SAM_STAT_GOOD;
 		} else if (attrs->lu_vpd[PCODE_OFFSET(pcode)]) {
 			vpd_pg = attrs->lu_vpd[PCODE_OFFSET(pcode)];
@@ -273,7 +276,7 @@ int spc_inquiry(int host_no, struct scsi_cmd *cmd)
 			data[2] = (vpd_pg->size >> 8);
 			data[3] = vpd_pg->size & 0xff;
 			memcpy(&data[4], vpd_pg->data, vpd_pg->size);
-			len = vpd_pg->size + 4;
+			avail_len = vpd_pg->size + 4;
 			ret = SAM_STAT_GOOD;
 		}
 	}
@@ -281,11 +284,12 @@ int spc_inquiry(int host_no, struct scsi_cmd *cmd)
 	if (ret != SAM_STAT_GOOD)
 		goto sense;
 
-	scsi_set_in_resid_by_actual(cmd, len);
-	memcpy(scsi_get_in_buffer(cmd), data, scb[4]);
-
 	if (cmd->dev->lun != cmd->dev_id)
 		data[0] = TYPE_NO_LUN;
+
+	actual_len = spc_memcpy(scsi_get_in_buffer(cmd), &alloc_len,
+				data, avail_len);
+	scsi_set_in_resid_by_actual(cmd, actual_len);
 
 	return SAM_STAT_GOOD;
 sense:
@@ -298,42 +302,41 @@ int spc_report_luns(int host_no, struct scsi_cmd *cmd)
 {
 	struct scsi_lu *lu;
 	struct list_head *dev_list = &cmd->c_target->device_list;
-	uint64_t lun, *data;
-	int idx, alen, nr_luns;
+	uint32_t alloc_len, avail_len, remain_len, actual_len;
+	uint64_t lun, *data, *plun;
 	unsigned char key = ILLEGAL_REQUEST;
 	uint16_t asc = ASC_INVALID_FIELD_IN_CDB;
 	uint8_t *scb = cmd->scb;
 
-	alen = (uint32_t)scb[6] << 24 | (uint32_t)scb[7] << 16 |
-		(uint32_t)scb[8] << 8 | (uint32_t)scb[9];
-	if (alen < 16)
+	alloc_len = get_unaligned_be32(&scb[6]);
+	if (alloc_len < 16)
 		goto sense;
 
-	if (scsi_get_in_length(cmd) < alen)
+	if (scsi_get_in_length(cmd) < alloc_len)
 		goto sense;
 
 	data = scsi_get_in_buffer(cmd);
-	memset(data, 0, alen);
-
-	alen &= ~(8 - 1);
-	alen -= 8;
-	idx = 1;
-	nr_luns = 0;
+	plun = data + 1;
+	remain_len = alloc_len - 8;
+	actual_len = 8;
+	avail_len = 0; /* accumulate LUN list length */
 
 	list_for_each_entry(lu, dev_list, device_siblings) {
-		nr_luns++;
-
-		if (!alen)
-			continue;
-
-		lun = lu->lun;
-		lun = ((lun > 0xff) ? (0x1 << 30) : 0) | ((0x3ff & lun) << 16);
-		data[idx++] = __cpu_to_be64(lun << 32);
-		alen -= 8;
+		if (remain_len) {
+			lun = lu->lun;
+			lun = ((lun > 0xff) ? (0x1 << 30) : 0) |
+			      ((0x3ff & lun) << 16);
+			lun = __cpu_to_be64(lun << 32);
+		}
+		actual_len += spc_memcpy((uint8_t *)plun, &remain_len,
+					 (uint8_t *)&lun, 8);
+		avail_len += 8;
+		plun++;
 	}
 
-	*((uint32_t *) data) = __cpu_to_be32(nr_luns * 8);
-	scsi_set_in_resid_by_actual(cmd, nr_luns * 8 + 8);
+	*data = 0;
+	*((uint32_t *) data) = __cpu_to_be32(avail_len);
+	scsi_set_in_resid_by_actual(cmd, actual_len);
 
 	return SAM_STAT_GOOD;
 sense:
@@ -558,43 +561,48 @@ int set_mode_page_changeable_mask(struct scsi_lu *lu, uint8_t pcode,
  * be returned to the initiator
  *
  * Returns number of bytes copied.
+ * Returns remaining alloc length in out-param remain_len
  */
 static int build_mode_page(uint8_t *data, struct mode_pg *pg,
-			   uint8_t pc, uint16_t *alloc_len)
+			   uint32_t *avail_len, uint32_t *remain_len,
+			   uint8_t pc)
 {
-	uint8_t *p;
-	int len, hdr_size = 2;
-	uint8_t *mode_data;
+	uint8_t hdr[4];
+	uint32_t hdr_size, actual_len;
+	uint8_t *p, *mode_data;
 
-	len = pg->pcode_size;
-	if (*alloc_len >= 2) {
-		if (!pg->subpcode) {
-			data[0] = pg->pcode;
-			data[1] = len;
-		} else {
-			data[0] = pg->pcode | 0x40;
-			data[1] = pg->subpcode;
-			data[2] = len >> 8;
-			data[3] = len & 0xff;
-			hdr_size = 4;
-		}
+	if (!pg->subpcode) {
+		hdr[0] = pg->pcode;
+		hdr[1] = pg->pcode_size;
+		hdr_size = 2;
+	} else {
+		hdr[0] = pg->pcode | 0x40;
+		hdr[1] = pg->subpcode;
+		hdr[2] = (pg->pcode_size >> 8) & 0xff;
+		hdr[3] = pg->pcode_size & 0xff;
+		hdr_size = 4;
 	}
-	*alloc_len -= min_t(uint16_t, *alloc_len, hdr_size);
+	actual_len = spc_memcpy(data, remain_len, hdr, hdr_size);
+	*avail_len += hdr_size;
 
 	p = &data[hdr_size];
-	len += hdr_size;
-	if (*alloc_len >= pg->pcode_size) {
-		if (pc == 1)
-			mode_data = pg->mode_data + pg->pcode_size;
-		else
-			mode_data = pg->mode_data;
+	mode_data = pg->mode_data;
+	if (pc == 1)
+		mode_data += pg->pcode_size;
+	actual_len += spc_memcpy(p, remain_len, mode_data, pg->pcode_size);
+	*avail_len += pg->pcode_size;
 
-		memcpy(p, mode_data, pg->pcode_size);
-	}
+	return actual_len;
+}
 
-	*alloc_len -= min_t(uint16_t, *alloc_len, pg->pcode_size);
-
-	return len;
+/*
+ * Set a byte at the given index within dst buffer to val,
+ * not exceeding dst_len bytes available at dst.
+ */
+void set_byte_safe(uint8_t *dst, uint32_t dst_len, uint32_t index, int val)
+{
+	if (index < dst_len)
+		dst[index] = (uint8_t)val;
 }
 
 /**
@@ -606,15 +614,18 @@ static int build_mode_page(uint8_t *data, struct mode_pg *pg,
  */
 int spc_mode_sense(int host_no, struct scsi_cmd *cmd)
 {
-	uint8_t *data = NULL, *scb, mode6, dbd, pcode, subpcode, pctrl;
-	uint16_t alloc_len, len = 0;
+	uint8_t *data = NULL, *scb;
+	uint8_t mode6, dbd, blk_desc_len, pcode, pctrl, subpcode;
 	unsigned char key = ILLEGAL_REQUEST;
 	uint16_t asc = ASC_INVALID_FIELD_IN_CDB;
+	uint32_t alloc_len, avail_len, remain_len, actual_len;
+	uint32_t hdr_len, mod_data_len;
 	struct mode_pg *pg;
 
 	scb = cmd->scb;
 	mode6 = (scb[0] == 0x1a);
 	dbd = scb[1] & 0x8; /* Disable Block Descriptors */
+	blk_desc_len = dbd ? 0 : BLOCK_DESCRIPTOR_LEN;
 	pcode = scb[2] & 0x3f;
 	pctrl = (scb[2] & 0xc0) >> 6;
 	subpcode = scb[3];
@@ -627,50 +638,59 @@ int spc_mode_sense(int host_no, struct scsi_cmd *cmd)
 	data = scsi_get_in_buffer(cmd);
 
 	if (mode6) {
-		alloc_len = scb[4];
-		len = 4;
+		alloc_len = (uint32_t)scb[4];
+		hdr_len = 4;
 	} else {
-		alloc_len = (scb[7] << 8) + scb[8];
-		len = 8;
+		alloc_len = (uint32_t)get_unaligned_be16(&scb[7]);
+		hdr_len = 8;
 	}
 
 	if (scsi_get_in_length(cmd) < alloc_len)
 		goto sense;
 	memset(data, 0, alloc_len);
 
-	alloc_len -= min(alloc_len, len);
+	avail_len = hdr_len;
+	actual_len = min_t(uint32_t, alloc_len, hdr_len);
+	remain_len = alloc_len - actual_len;
 
 	if (!dbd) {
-		if (alloc_len >= BLOCK_DESCRIPTOR_LEN)
-			memcpy(data + len, cmd->dev->mode_block_descriptor,
-			       BLOCK_DESCRIPTOR_LEN);
-		len += BLOCK_DESCRIPTOR_LEN;
-		alloc_len -= min_t(uint16_t, alloc_len, BLOCK_DESCRIPTOR_LEN);
+		actual_len += spc_memcpy(data + actual_len,
+					 &remain_len,
+					 cmd->dev->mode_block_descriptor,
+					 BLOCK_DESCRIPTOR_LEN);
+		avail_len += BLOCK_DESCRIPTOR_LEN;
 	}
 
 	if (pcode == 0x3f) {
 		list_for_each_entry(pg,
 				    &cmd->dev->mode_pages,
 				    mode_pg_siblings) {
-			len += build_mode_page(data + len, pg, pctrl,
-					       &alloc_len);
+			actual_len += build_mode_page(data + actual_len, pg,
+						      &avail_len, &remain_len,
+						      pctrl);
 		}
 	} else {
 		pg = find_mode_page(cmd->dev, pcode, subpcode);
 		if (!pg)
 			goto sense;
-		len += build_mode_page(data + len, pg, pctrl, &alloc_len);
+		actual_len += build_mode_page(data + actual_len, pg,
+					      &avail_len, &remain_len,
+					      pctrl);
 	}
 
 	if (mode6) {
-		data[0] = len - 1;
-		data[3] = dbd ? 0 : BLOCK_DESCRIPTOR_LEN;
+		mod_data_len = avail_len - 1;
+		set_byte_safe(data, 0, alloc_len, mod_data_len & 0xff);
+		set_byte_safe(data, 3, alloc_len, blk_desc_len & 0xff);
 	} else {
-		*(uint16_t *)(data) = __cpu_to_be16(len - 2);
-		data[7] = dbd ? 0 : BLOCK_DESCRIPTOR_LEN;
+		mod_data_len = avail_len - 2;
+		set_byte_safe(data, 0, alloc_len, (mod_data_len >> 8) & 0xff);
+		set_byte_safe(data, 1, alloc_len, mod_data_len & 0xff);
+		set_byte_safe(data, 6, alloc_len, (blk_desc_len >> 8) & 0xff);
+		set_byte_safe(data, 7, alloc_len, blk_desc_len & 0xff);
 	}
 
-	scsi_set_in_resid_by_actual(cmd, len);
+	scsi_set_in_resid_by_actual(cmd, actual_len);
 	return SAM_STAT_GOOD;
 sense:
 	scsi_set_in_resid_by_actual(cmd, 0);
@@ -685,7 +705,7 @@ static int report_opcodes_all(struct scsi_cmd *cmd, int rctd,
 	struct device_type_operations *ops;
 	struct service_action *service_action;
 	int i;
-	uint32_t len;
+	uint32_t avail_len, actual_len;
 	int cdb_length;
 
 	/* cant request RCTD for all descriptors */
@@ -756,17 +776,12 @@ static int report_opcodes_all(struct scsi_cmd *cmd, int rctd,
 		}
 	}
 
-	len = data - &buf[0];
-	len -= 4;
-	buf[0] = (len >> 24) & 0xff;
-	buf[1] = (len >> 16) & 0xff;
-	buf[2] = (len >> 8)  & 0xff;
-	buf[3] = len & 0xff;
+	avail_len = data - &buf[0];
+	put_unaligned_be32(avail_len-4, data);
 
-	memcpy(scsi_get_in_buffer(cmd), buf,
-	       min(scsi_get_in_length(cmd), len+4));
-
-	scsi_set_in_resid_by_actual(cmd, len+4);
+	actual_len = spc_memcpy(scsi_get_in_buffer(cmd), &alloc_len,
+				buf, avail_len);
+	scsi_set_in_resid_by_actual(cmd, actual_len);
 
 	return SAM_STAT_GOOD;
 }
@@ -777,18 +792,16 @@ int spc_report_supported_opcodes(int host_no, struct scsi_cmd *cmd)
 	uint16_t requested_service_action;
 	uint32_t alloc_len;
 	int rctd;
-	int ret = SAM_STAT_GOOD;
+	int ret;
+	unsigned char key = ILLEGAL_REQUEST;
+	uint16_t asc = ASC_INVALID_FIELD_IN_CDB;
 
 	reporting_options = cmd->scb[2] & 0x07;
+	requested_service_action = get_unaligned_be16(&cmd->scb[4]);
 
-	requested_service_action = cmd->scb[4];
-	requested_service_action <<= 8;
-	requested_service_action |= cmd->scb[5];
-
-	alloc_len = (uint32_t)cmd->scb[6] << 24 |
-		(uint32_t)cmd->scb[7] << 16 |
-		(uint32_t)cmd->scb[8] << 8 |
-		(uint32_t)cmd->scb[9];
+	alloc_len = get_unaligned_be32(&cmd->scb[6]);
+	if (scsi_get_in_length(cmd) < alloc_len)
+		goto sense;
 
 	rctd = cmd->scb[2] & 0x80;
 
@@ -799,13 +812,14 @@ int spc_report_supported_opcodes(int host_no, struct scsi_cmd *cmd)
 	case 0x01: /* report one no service action*/
 	case 0x02: /* report one service action */
 	default:
-		scsi_set_in_resid_by_actual(cmd, 0);
-		sense_data_build(cmd, ILLEGAL_REQUEST,
-			ASC_INVALID_FIELD_IN_CDB);
-		ret = SAM_STAT_CHECK_CONDITION;
+		goto sense;
 	}
-
 	return ret;
+
+sense:
+	scsi_set_in_resid_by_actual(cmd, 0);
+	sense_data_build(cmd, key, asc);
+	return SAM_STAT_CHECK_CONDITION;
 }
 
 struct service_action maint_in_service_actions[] = {
@@ -879,45 +893,39 @@ static int is_pr_holder(struct scsi_lu *lu, struct registration *reg)
 
 static int spc_pr_read_keys(int host_no, struct scsi_cmd *cmd)
 {
+	uint32_t alloc_len, avail_len, actual_len, remain_len;
+	uint8_t *buf;
+	struct registration *reg;
+	uint64_t reg_key;
 	uint16_t asc = ASC_INVALID_FIELD_IN_CDB;
 	uint8_t key = ILLEGAL_REQUEST;
-	struct registration *reg;
-	uint16_t len;
-	uint32_t keys;
-	uint8_t *buf;
-	int off;
 
-	len = get_unaligned_be16(cmd->scb + 7);
-	if (len < 8)
+	alloc_len = (uint32_t)get_unaligned_be16(&cmd->scb[7]);
+	if (alloc_len < 8)
 		goto sense;
 
-	if (scsi_get_in_length(cmd) < len)
+	if (scsi_get_in_length(cmd) < alloc_len)
 		goto sense;
 
 	buf = scsi_get_in_buffer(cmd);
-	memset(buf, 0, len);
-
-	len &= ~(8 - 1);
-	keys = 0;
-	off = 8;
 
 	put_unaligned_be32(cmd->dev->prgeneration, &buf[0]);
+	actual_len = 8;
+	avail_len = 8;
+	remain_len = alloc_len - 8;
 
 	list_for_each_entry(reg, &cmd->dev->registration_list,
 			    registration_siblings) {
 
-		if (!len)
-			continue;
-		put_unaligned_be64(reg->key, &buf[off]);
-
-		len -= 8;
-		off += 8;
-		keys++;
+		reg_key = __cpu_to_be64(reg->key);
+		actual_len += spc_memcpy(&buf[actual_len], &remain_len,
+					 (uint8_t *)&reg_key, 8);
+		avail_len += 8;
 	}
 
-	put_unaligned_be32(keys * 8, &buf[4]);
+	put_unaligned_be32(avail_len - 8, &buf[4]); /* additional length */
 
-	scsi_set_in_resid_by_actual(cmd, keys * 8 + 8);
+	scsi_set_in_resid_by_actual(cmd, actual_len);
 
 	return SAM_STAT_GOOD;
 sense:
@@ -928,34 +936,31 @@ sense:
 
 static int spc_pr_read_reservation(int host_no, struct scsi_cmd *cmd)
 {
+	uint32_t alloc_len, add_len, avail_len, actual_len;
+	struct registration *reg;
+	uint64_t res_key;
+	uint8_t buf[32];
+	uint8_t *data;
 	uint16_t asc = ASC_INVALID_FIELD_IN_CDB;
 	uint8_t key = ILLEGAL_REQUEST;
-	struct registration *reg;
-	uint16_t len;
-	uint8_t *buf;
-	uint64_t res_key;
+
+	alloc_len = (uint32_t)get_unaligned_be16(&cmd->scb[7]);
+	if (alloc_len < 8)
+		goto sense;
+
+	if (scsi_get_in_length(cmd) < alloc_len)
+		goto sense;
 
 	reg = cmd->dev->pr_holder;
+	add_len = (reg ? 16 : 0);
+	avail_len = 8 + add_len;
 
-	if (reg)
-		len = 24;
-	else
-		len = 8;
-
-	if (get_unaligned_be16(cmd->scb + 7) < len)
-		goto sense;
-
-	if (scsi_get_in_length(cmd) < len)
-		goto sense;
-
-	buf = scsi_get_in_buffer(cmd);
-	memset(buf, 0, len);
+	memset(buf, 0, avail_len);
 
 	put_unaligned_be32(cmd->dev->prgeneration, &buf[0]);
+	put_unaligned_be32(add_len, &buf[4]); /* additional length */
 
 	if (reg) {
-		put_unaligned_be32(16, &buf[4]);
-
 		if (reg->pr_type == PR_TYPE_WRITE_EXCLUSIVE_ALLREG ||
 		    reg->pr_type == PR_TYPE_EXCLUSIVE_ACCESS_ALLREG)
 			res_key = 0;
@@ -963,11 +968,14 @@ static int spc_pr_read_reservation(int host_no, struct scsi_cmd *cmd)
 			res_key = reg->key;
 
 		put_unaligned_be64(res_key, &buf[8]);
-		buf[21] = ((reg->pr_scope << 4) & 0xf0) | (reg->pr_type & 0x0f);
-	} else
-		put_unaligned_be32(0, &buf[4]);
 
-	scsi_set_in_resid_by_actual(cmd, len);
+		buf[21] = (reg->pr_scope << 4) & 0xf0;
+		buf[21] |= reg->pr_type & 0x0f;
+	}
+
+	data = scsi_get_in_buffer(cmd);
+	actual_len = spc_memcpy(data, &alloc_len, buf, avail_len);
+	scsi_set_in_resid_by_actual(cmd, actual_len);
 
 	return SAM_STAT_GOOD;
 sense:
@@ -978,35 +986,38 @@ sense:
 
 static int spc_pr_report_capabilities(int host_no, struct scsi_cmd *cmd)
 {
+	uint32_t alloc_len, avail_len, actual_len;
+	uint8_t *data, buf[8];
 	uint16_t asc = ASC_INVALID_FIELD_IN_CDB;
 	uint8_t key = ILLEGAL_REQUEST;
-	uint8_t *buf;
-	uint16_t len;
 
-	len = get_unaligned_be16(cmd->scb + 7);
-	if (len < 8)
+	alloc_len = (uint32_t)get_unaligned_be16(&cmd->scb[7]);
+	if (alloc_len < 8)
 		goto sense;
 
-	if (scsi_get_in_length(cmd) < len)
+	if (scsi_get_in_length(cmd) < alloc_len)
 		goto sense;
 
-	buf = scsi_get_in_buffer(cmd);
+	memset(buf, 0, 8);
+	avail_len = 8;
 
-	len = 8;
-
-	memset(buf, 0, len);
-
-	put_unaligned_be16(len, &buf[0]);
+	put_unaligned_be16(avail_len, &buf[0]); /* length */
 
 	/* we don't set any capability for now */
 
 	/* Persistent Reservation Type Mask format */
+	buf[3] |= 0x80; /* Type Mask Valid (TMV) */
+
 	buf[4] |= 0x80; /* PR_TYPE_EXCLUSIVE_ACCESS_ALLREG */
 	buf[4] |= 0x40; /* PR_TYPE_EXCLUSIVE_ACCESS_REGONLY */
 	buf[4] |= 0x20; /* PR_TYPE_WRITE_EXCLUSIVE_REGONLY */
 	buf[4] |= 0x08; /* PR_TYPE_EXCLUSIVE_ACCESS */
 	buf[4] |= 0x02; /* PR_TYPE_WRITE_EXCLUSIVE */
 	buf[5] |= 0x01; /* PR_TYPE_EXCLUSIVE_ACCESS_ALLREG */
+
+	data = scsi_get_in_buffer(cmd);
+	actual_len = spc_memcpy(data, &alloc_len, buf, avail_len);
+	scsi_set_in_resid_by_actual(cmd, actual_len);
 
 	return SAM_STAT_GOOD;
 sense:
@@ -1055,16 +1066,79 @@ static void __unregister(struct scsi_lu *lu, struct registration *reg)
 	free(reg);
 }
 
+static void __unregister_and_clean(struct scsi_cmd *cmd,
+				   struct registration *reg)
+{
+	struct registration *holder, *registrant;
+
+
+	/* if reservation owner goes away then so does reservation */
+	list_del(&reg->registration_siblings);
+
+	holder = cmd->dev->pr_holder;
+	if (!holder) {
+		free(reg);
+		return;
+	}
+
+	if (!is_pr_holder(cmd->dev, reg)) {
+		free(reg);
+		return;
+	}
+
+	if (((holder->pr_type != PR_TYPE_WRITE_EXCLUSIVE_ALLREG) &&
+	     (holder->pr_type != PR_TYPE_EXCLUSIVE_ACCESS_ALLREG)) ||
+	    list_empty(&cmd->dev->registration_list)) {
+
+		/* not all-registrants or no more registrants */
+
+		holder->pr_scope = 0;
+		holder->pr_type = 0;
+		cmd->dev->pr_holder = NULL;
+
+		/* tell other registrants the reservation went away */
+		list_for_each_entry(registrant,
+		    &cmd->dev->registration_list,
+		    registration_siblings) {
+			/* do not send UA to self */
+			if (registrant == reg)
+				continue;
+			ua_sense_add_other_it_nexus(registrant->nexus_id,
+			    cmd->dev,
+			    ASC_RESERVATIONS_RELEASED);
+		}
+		cmd->dev->prgeneration++;
+	} else {
+
+		/* all-registrants and there are more registrants */
+
+		list_for_each_entry(registrant,
+		    &cmd->dev->registration_list,
+		    registration_siblings) {
+			if (registrant != reg) {
+				/* give resvn to any sibling */
+				cmd->dev->pr_holder = registrant;
+				registrant->pr_scope = holder->pr_scope;
+				registrant->pr_type = holder->pr_type;
+				break;
+			}
+		}
+	}
+
+	free(reg);
+}
+
 static int check_pr_out_basic_parameter(struct scsi_cmd *cmd)
 {
-	uint8_t spec_i_pt, all_tg_pt, aptpl;
+	uint32_t param_list_len;
 	uint8_t *buf;
-	uint16_t len = 24;
+	uint8_t spec_i_pt, all_tg_pt, aptpl;
 
-	if (get_unaligned_be16(cmd->scb + 7) < len)
+	param_list_len = get_unaligned_be32(&cmd->scb[5]);
+	if (param_list_len != 24)
 		return 1;
 
-	if (scsi_get_out_length(cmd) < len)
+	if (scsi_get_out_length(cmd) < 24)
 		return 1;
 
 	buf = scsi_get_out_buffer(cmd);
@@ -1110,7 +1184,7 @@ static int spc_pr_register(int host_no, struct scsi_cmd *cmd)
 			if (sa_res_key)
 				reg->key = sa_res_key;
 			else
-				__unregister(cmd->dev, reg);
+				__unregister_and_clean(cmd, reg);
 		} else
 			return SAM_STAT_RESERVATION_CONFLICT;
 	} else {
@@ -1235,7 +1309,7 @@ static int spc_pr_release(int host_no, struct scsi_cmd *cmd)
 	if (res_key != reg->key)
 		return SAM_STAT_RESERVATION_CONFLICT;
 
-	if (reg->pr_scope != pr_scope || reg->pr_type != pr_type) {
+	if (holder->pr_scope != pr_scope || holder->pr_type != pr_type) {
 		asc = ASC_INVALID_RELEASE_OF_PERSISTENT_RESERVATION;
 		goto sense;
 	}
@@ -1414,24 +1488,26 @@ static int spc_pr_register_and_move(int host_no, struct scsi_cmd *cmd)
 {
 	uint16_t asc = ASC_INVALID_FIELD_IN_CDB;
 	uint8_t key = ILLEGAL_REQUEST;
+	uint32_t param_list_len;
 	char *buf;
-	uint8_t unreg;
+	uint8_t unreg, aptpl;
 	uint64_t res_key, sa_res_key;
-	uint32_t addlen, idlen;
+	uint32_t tpid_data_len, idlen;
 	struct registration *reg, *dst;
-	uint16_t len = 24;
 	int (*id)(int, uint64_t, char *, int);
 	char tpid[300]; /* large enough? */
 
-	if (get_unaligned_be16(cmd->scb + 7) < len)
+	param_list_len = get_unaligned_be32(&cmd->scb[5]);
+	if (param_list_len < 24)
 		goto sense;
 
-	if (scsi_get_out_length(cmd) < len)
+	if (scsi_get_out_length(cmd) < param_list_len)
 		goto sense;
 
 	buf = scsi_get_out_buffer(cmd);
 
-	if (buf[17] & 0x01)
+	aptpl = buf[17] & 0x01;
+	if (aptpl) /* not reported in capabilities */
 		goto sense;
 
 	unreg = buf[17] & 0x02;
@@ -1439,7 +1515,11 @@ static int spc_pr_register_and_move(int host_no, struct scsi_cmd *cmd)
 	res_key = get_unaligned_be64(buf);
 	sa_res_key = get_unaligned_be64(buf + 8);
 
-	addlen = get_unaligned_be32(buf + 24);
+	tpid_data_len = get_unaligned_be32(&buf[20]);
+	if (tpid_data_len < 24 || tpid_data_len % 4 != 0)
+		goto sense;
+	if (param_list_len - 24 < tpid_data_len)
+		goto sense;
 
 	reg = lookup_registration_by_nexus(cmd->dev, cmd->it_nexus);
 	if (!reg) {
@@ -1470,10 +1550,8 @@ found:
 	if (id) {
 		memset(tpid, 0, sizeof(tpid));
 		idlen = id(cmd->dev->tgt->tid, dst->nexus_id, tpid, sizeof(tpid));
-		if (addlen) {
-			if (strncmp(tpid, buf + 28, strlen(tpid)))
-				goto sense;
-		}
+		if (tpid_data_len != idlen || memcmp(tpid, &buf[24], idlen))
+			goto sense;
 	}
 
 	cmd->dev->pr_holder = dst;
@@ -1520,9 +1598,10 @@ int spc_access_check(struct scsi_cmd *cmd)
 	pr_type = cmd->dev->pr_holder->pr_type;
 	bits = cmd->dev->dev_type_template.ops[op].pr_conflict_bits;
 
-	if (pr_type == PR_TYPE_WRITE_EXCLUSIVE ||
-	    pr_type == PR_TYPE_EXCLUSIVE_ACCESS)
-		conflict = bits & (PR_WE_FA|PR_EA_FA);
+	if (pr_type == PR_TYPE_EXCLUSIVE_ACCESS)
+		conflict = bits & PR_EA_FA;
+	else if (pr_type == PR_TYPE_WRITE_EXCLUSIVE)
+		conflict = bits & PR_WE_FA;
 	else {
 		if (reg)
 			conflict = bits & PR_RR_FR;
@@ -1540,17 +1619,17 @@ int spc_access_check(struct scsi_cmd *cmd)
 
 int spc_request_sense(int host_no, struct scsi_cmd *cmd)
 {
-	uint8_t *data;
-	uint32_t len;
+	uint32_t alloc_len, actual_len;
 
-	data = scsi_get_in_buffer(cmd);
-	len = scsi_get_in_length(cmd);
+	alloc_len = (uint32_t)cmd->scb[4];
+	alloc_len = min_t(uint32_t, alloc_len, scsi_get_in_length(cmd));
 
 	sense_data_build(cmd, NO_SENSE, NO_ADDITIONAL_SENSE);
 
-	memcpy(data, cmd->sense_buffer, min_t(uint32_t, len, cmd->sense_len));
+	actual_len = spc_memcpy(scsi_get_in_buffer(cmd), &alloc_len,
+				cmd->sense_buffer, cmd->sense_len);
 
-	scsi_set_in_resid_by_actual(cmd, cmd->sense_len);
+	scsi_set_in_resid_by_actual(cmd, actual_len);
 
 	/* reset sense buffer in cmnd */
 	memset(cmd->sense_buffer, 0, sizeof(cmd->sense_buffer));

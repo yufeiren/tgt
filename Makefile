@@ -1,4 +1,4 @@
-VERSION ?= 1.0.33
+VERSION ?= 1.0.35
 
 CHECK_CC = cgcc
 CHECK_CC_FLAGS = '$(CHECK_CC) -Wbitwise -Wno-return-void -no-compile $(ARCH)'
@@ -11,6 +11,7 @@ export VERSION PREFIX
 
 # Export the feature switches so sub-make knows about them
 export ISCSI_RDMA
+export CEPH_RBD
 
 .PHONY: all
 all: programs doc conf scripts
@@ -63,8 +64,16 @@ clean-conf:
 .PHONY: install
 install: install-programs install-doc install-conf install-scripts
 
+.PHONY: rpm
+rpm:
+	@./scripts/build-rpm.sh
+
+.PHONY: clean-rpm
+clean-rpm:
+	rm -fr rpmtop
+
 .PHONY: clean
-clean: clean-programs clean-doc clean-conf clean-scripts
+clean: clean-programs clean-doc clean-conf clean-scripts clean-rpm
 
 .PHONY:check
 check: ARCH=$(shell sh script/checkarch.sh)
