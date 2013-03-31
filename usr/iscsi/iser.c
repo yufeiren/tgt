@@ -499,6 +499,17 @@ static void iser_prep_rdma_rd_send_req(struct iser_task *task,
 
 	rdmad->sge.length = cur_req_sz;
 
+#ifdef NUMA_CACHE
+	/* reset addr */
+	if (task->is_read || task->is_write) {
+		dprintf("numa cache: WRITE change addr to numa node %d\n", \
+			rdma_buf->cur_node);
+		rdmad->sge.addr = uint64_from_ptr(rdma_buf->numa_addr[rdma_buf->cur_node]);
+		/* update lkey for numa-aware cache */
+		rdmad->sge.lkey = rdmad->numa_sge[rdma_buf->cur_node].lkey;
+	}
+#endif
+
 	rdmad->send_wr.next = (next_wr ? &next_wr->send_wr : NULL);
 	rdmad->send_wr.opcode = IBV_WR_RDMA_READ;
 	rdmad->send_wr.send_flags = (signaled ? IBV_SEND_SIGNALED : 0);

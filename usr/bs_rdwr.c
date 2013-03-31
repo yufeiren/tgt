@@ -91,7 +91,7 @@ static void bs_rdwr_request(struct scsi_cmd *cmd)
 	key = asc = 0;
 
 #ifdef NUMA_CACHE
-	dprintf("numa cache: cmd is %d\n", cmd->scb[0]);
+	dprintf("numa cache: cmd is %x\n", cmd->scb[0]);
 #endif
 	switch (cmd->scb[0])
 	{
