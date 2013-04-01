@@ -237,6 +237,7 @@ write:
 		if (do_verify)
 			goto verify;
 #else
+write:
 		dprintf("numa cache: =================================\n");
 		dprintf("numa cache: start serve an WRITE io request\n");
 
