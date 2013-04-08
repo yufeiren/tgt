@@ -307,7 +307,18 @@ int split_io(struct scsi_cmd *cmd, struct host_cache *hc)
 	/* reset network buffer location */
 	if (cmd->rdma == 1) {
 		data_buf = (struct iser_membuf *) cmd->netbuf;
+		/* ONLY read operation need reset nodeid */
+	switch (cmd->scb[0])
+	{
+	case READ_6:
+	case READ_10:
+	case READ_12:
+	case READ_16:
 		data_buf->cur_node = nodeid;
+		break;
+	default:
+		break;
+	}
 		cmd->nodeid = nodeid;
 		data_buf->addr = data_buf->numa_addr[data_buf->cur_node];
 	} else {

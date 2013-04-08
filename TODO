@@ -23,4 +23,11 @@ numa_alloc_onnode would take no effect. bug this bug to community.
 11. split_io cache
 	used for cache the result of split_io
 	key (lun, lba, length) - value (numa node)
+12. O_DIRECT needs page alignment... how to fix this problem?
+	read - 
+	write - 
+13. WRITE policy: updating cache block instead of invalidate cache block
+14. take out NUMA-aware cache as an independent module for other software
+
+
 

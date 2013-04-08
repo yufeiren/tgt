@@ -187,6 +187,7 @@ struct registration {
 
 struct scsi_lu {
 	int fd;
+	int fd_od; /* for O_DIRECT */
 	uint64_t addr; /* persistent mapped address */
 	uint64_t size;
 	uint64_t lun;

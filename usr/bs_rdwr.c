@@ -68,6 +68,7 @@ static void bs_sync_sync_range(struct scsi_cmd *cmd, uint32_t length,
 static void bs_rdwr_request(struct scsi_cmd *cmd)
 {
 	int ret, fd = cmd->dev->fd;
+	int fd_od = cmd->dev->fd_od;
 	uint32_t length;
 	int result = SAM_STAT_GOOD;
 	uint8_t key;
@@ -239,7 +240,7 @@ write:
 #else
 write:
 		dprintf("numa cache: =================================\n");
-		dprintf("numa cache: start serve an WRITE io request\n");
+		dprintf("numa cache: start serving a WRITE io request\n");
 
 		for (i = 0; i < cmd->nr_sior; i ++) {
 			dprintf("numa cache: sub request %d\n", i);
@@ -249,13 +250,39 @@ write:
 			nc_mutex_lock(&(nc->mutex));
 
 			/* if block is in cache, invalidate it */
-			invalidate_cache_block(ior->tid, ior->lun, \
-					       ior->cb_id, nc);
+			cb = get_cache_block(ior->tid, ior->lun, \
+					     ior->cb_id, nc);
+			if (cb->is_valid == CACHE_VALID) {	/* hit */
+				dprintf("numa cache: cache hit - update it adn write back\n");
+				memcpy(cb->addr + ior->in_offset, \
+				       scsi_get_out_buffer(cmd) + ior->m_offset,\
+				       ior->length);
+				/* write back whole cache block */
+				/* optimize this ? */
+				ret = pwrite64(fd, cb->addr, cb->cbs, \
+					       ior->offset);
+				nc_mutex_unlock(&(nc->mutex));
+				continue;
+			}
 
-			/* write memory data into disk */
-			dprintf("numa cache: write data: %d bytes\n", \
-				ior->length);
-			ret = pwrite64(fd, scsi_get_out_buffer(cmd) + (uint64_t) ior->m_offset, ior->length, ior->offset + (uint64_t) ior->in_offset);
+			dprintf("numa cache: cache not hit - read it, and update it, and write back \n");
+			pread64(fd, cb->addr, cb->cbs, ior->offset);
+			memcpy(cb->addr + ior->in_offset, \
+			       scsi_get_out_buffer(cmd) + ior->m_offset,\
+			       ior->length);
+
+			/* write back whole cache */
+			ret = pwrite64(fd, cb->addr, cb->cbs, ior->offset);
+
+			/* update cb into cache */
+			cb->is_valid = CACHE_VALID;
+			cb->cb_id = ior->cb_id;
+			cb->dev_id = ior->dev_id;
+			cb->tid = ior->tid;
+			cb->lun = ior->lun;
+
+			dprintf("numa cache: insert cache block\n");
+			insert_cache_block(cb, nc);
 
 			nc_mutex_unlock(&(nc->mutex));
 		}
@@ -320,7 +347,7 @@ write:
 #else
 		/* length = scsi_get_in_length(cmd); */
 		dprintf("numa cache: =================================\n");
-		dprintf("numa cache: start serve an READ io request\n");
+		dprintf("numa cache: start serving a READ io request\n");
 
 		for (i = 0; i < cmd->nr_sior; i ++) {
 			dprintf("numa cache: sub request %d\n", i);
@@ -351,9 +378,9 @@ write:
 			if (ret != cb->cbs)
 				set_medium_error(&result, &key, &asc);
 
-			if ((cmd->scb[0] != READ_6) && (cmd->scb[1] & 0x10))
+			/*			if ((cmd->scb[0] != READ_6) && (cmd->scb[1] & 0x10))
 				posix_fadvise(fd, ior->offset, ior->length,
-					      POSIX_FADV_NOREUSE);
+				POSIX_FADV_NOREUSE); */
 
 			/* copy data into memory */
 			dprintf("numa cache: copy data into memory\n");
@@ -482,12 +509,17 @@ static int bs_rdwr_open(struct scsi_lu *lu, char *path, int *fd, uint64_t *size)
 {
 	uint32_t blksize = 0;
 
+
 #ifndef NUMA_CACHE
 	*fd = backed_file_open(path, O_RDWR|O_LARGEFILE|lu->bsoflags, size,
 				&blksize);
 #else
+	/* for direct io */
 	*fd = backed_file_open(path, O_RDWR|O_LARGEFILE|O_DIRECT|lu->bsoflags, size,
 				&blksize);
+	if (*fd < 0)
+		eprintf("open file with O_DIRECT fail - %d(%s)\n", \
+			errno, strerror(errno));
 #endif
 	/* If we get access denied, try opening the file in readonly mode */
 	if (*fd == -1 && (errno == EACCES || errno == EROFS)) {
@@ -497,6 +529,9 @@ static int bs_rdwr_open(struct scsi_lu *lu, char *path, int *fd, uint64_t *size)
 #else
 		*fd = backed_file_open(path, O_RDONLY|O_LARGEFILE|O_DIRECT|lu->bsoflags,
 				       size, &blksize);
+		if (*fd < 0)
+			eprintf("open file with O_DIRECT fail - %d(%s)\n", \
+				errno, strerror(errno));
 #endif
 		lu->attrs.readonly = 1;
 	}

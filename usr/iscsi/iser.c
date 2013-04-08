@@ -502,7 +502,13 @@ static void iser_prep_rdma_rd_send_req(struct iser_task *task,
 
 #ifdef NUMA_CACHE
 	/* reset addr */
+	/* At this moment, there is no information about the content
+	 * of this task. Data is still on the initiator
+	 * side. Therefore, we randomly choose a NUMA node to handle
+	 * this I/O request in the future.
+	 */
 	if (task->is_read || task->is_write) {
+		rdma_buf->cur_node = rand_r(&(hc.seed)) % hc.nr_numa_nodes;
 		dprintf("numa cache: WRITE change addr to numa node %d\n", \
 			rdma_buf->cur_node);
 		rdmad->sge.addr = uint64_from_ptr(rdma_buf->numa_addr[rdma_buf->cur_node]);
