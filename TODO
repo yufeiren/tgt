@@ -7,6 +7,10 @@ nc-v0.1.2:
 Move split_io to worker thread.
 nc-v0.1.3:
 Fix LRU algorithm bug.
+nc-v0.1.4:
+Support WRITE operation via iSER.
+Support R/W via iscsi.
+
 
 1. write invalidate support - done
 2. multiple LUN support - done
@@ -23,10 +27,10 @@ numa_alloc_onnode would take no effect. bug this bug to community.
 11. split_io cache
 	used for cache the result of split_io
 	key (lun, lba, length) - value (numa node)
-12. O_DIRECT needs page alignment... how to fix this problem?
+12. O_DIRECT needs page alignment... how to fix this problem? - done
 	read - 
-	write - 
-13. WRITE policy: updating cache block instead of invalidate cache block
+	write - read a cache block each time, update it, and write it back 
+13. WRITE policy: updating cache block instead of invalidate cache block - done
 14. take out NUMA-aware cache as an independent module for other software
 
 
