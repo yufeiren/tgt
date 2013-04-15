@@ -342,6 +342,12 @@ extern void iscsi_update_conn_stats_rx(struct iscsi_connection *conn, int size, 
 extern void iscsi_update_conn_stats_tx(struct iscsi_connection *conn, int size, int opcode);
 extern void iscsi_rsp_set_residual(struct iscsi_cmd_rsp *rsp, struct scsi_cmd *scmd);
 
+#ifdef NUMA_CACHE
+extern int iscsi_add_tcp_buf(struct tcp_data_buf_head *td, int pool_size, int block_size);
+int iscsi_delete_tcp_buf(struct tcp_data_buf_head *tdbuf, int pool_size, int block_size);
+#endif
+
+
 /* iscsid.c iscsi_task */
 extern void iscsi_free_task(struct iscsi_task *task);
 extern void iscsi_free_cmd_task(struct iscsi_task *task);

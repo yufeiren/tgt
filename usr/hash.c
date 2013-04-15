@@ -48,55 +48,55 @@ struct cache_block *get_cache_block(int tid, uint64_t lun, uint64_t cb_id, \
 		lru_hit_list(cur, hit_head);
 
 		return cur;
-	} else {
-		/* admit a cache block */
-		/* check ununsed list */
-		dprintf("numa cache: check unused list\n");
-		if (!list_empty(&(nc->unused_list.list))) {
-			dprintf("numa cache: find a block in unused list\n");
-			cur = list_first_entry(&(nc->unused_list.list), \
-				struct cache_block, list);
-			list_del(&(cur->list));
-
-			cur->hit_count = 0;
-			cur->is_valid = CACHE_INVALID;
-
-			return cur;
-		}
-		
-		/* check hit list */
-		dprintf("numa cache: check hit count list\n");
-		if (!list_empty(&(nc->hit_list.hit_list))) {
-			/* get the last item */
-			pos = nc->hit_list.hit_list.prev;
-			cur = list_entry(pos, struct cache_block, hit_list);
-			dprintf("numa cache: LRU replace cache info %ld %d %ld\n",
-				cur->cb_id, cur->tid, cur->lun);
-
-			dprintf("numa cache: delete from hash table\n");
-			/* delete from hash table */
-			list_del(&(cur->list));
-
-			/* delete from hit list */
-			list_del(&(cur->hit_list));
-
-			cur->hit_count = 0;
-			cur->is_valid = CACHE_INVALID;
-
-			return cur;
-		}
 	}
+
+	/* admit a cache block */
+	/* check ununsed list */
+	dprintf("numa cache: check unused list\n");
+	if (!list_empty(&(nc->unused_list.list))) {
+		dprintf("numa cache: find a block in unused list\n");
+		cur = list_first_entry(&(nc->unused_list.list), \
+			struct cache_block, list);
+		list_del(&(cur->list));
+
+		cur->hit_count = 0;
+		cur->is_valid = CACHE_INVALID;
+
+		return cur;
+	}
+		
+	/* check hit list */
+	dprintf("numa cache: check hit count list - should not empty\n");
+	if (list_empty(&(nc->hit_list.hit_list))) {
+		eprintf("numa cache: there must be a bug here!\n");
+	}
+
+	/* get the last item */
+	pos = nc->hit_list.hit_list.prev;
+	cur = list_entry(pos, struct cache_block, hit_list);
+	dprintf("numa cache: LRU replace cache info %ld %d %ld\n",
+		cur->cb_id, cur->tid, cur->lun);
+
+	dprintf("numa cache: delete from hash table\n");
+	/* delete from hash table */
+	list_del(&(cur->list));
+
+	/* delete from hit list */
+	list_del(&(cur->hit_list));
+
+	cur->hit_count = 0;
+	cur->is_valid = CACHE_INVALID;
+
+	return cur;
 }
 
 void invalidate_cache_block(int tid, uint64_t lun, uint64_t cb_id, \
 			    struct numa_cache *nc)
 {
 	int key;
-	struct list_head *pos;
 	struct cache_block *clist;	/* hash table cell list */
 	struct cache_block *cur;
 	struct cache_hash_table *ht = &(nc->ht);
-	struct cache_block *hit_head = &(nc->hit_list);
 	int is_found;
 
 	key = ht_hash_key(cb_id, ht);

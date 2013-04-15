@@ -40,6 +40,10 @@ int init_cache(struct host_cache *hc, struct cache_param *cp)
 	else
 		hc->nr_cache_area = cp->cache_way;
 
+	hc->dio_align = 512; /* getpagesize(); */
+	dprintf("numa cache: direct IO alignment is %d bytes\n", \
+		hc->dio_align);
+
 	hc->seed = getpid();
 	srand(hc->seed);
 
@@ -115,7 +119,8 @@ int alloc_nc(struct numa_cache *nc, struct host_cache *hc)
 	}
 
 	/* init hash table */
-	dprintf("numa cache: init hash table lock %x\n", &(nc->ht.lock));
+	dprintf("numa cache: init hash table lock %" PRIx64 "\n", \
+		&(nc->ht.lock));
 	for (i = 0; i < nc->ht.sz; i ++) {
 		INIT_LIST_HEAD(&(nc->ht.tablecell[i].list));
 	}
@@ -273,7 +278,7 @@ int split_io(struct scsi_cmd *cmd, struct host_cache *hc)
 			ior->in_offset = 0;
 			ior->m_offset = i * hc->cbs  - (cmd->offset - a_shadow);
 			ior->length = hc->cbs - (b_shadow - (cmd->offset + length));
-			ior->cb_id = b_shadow / hc->cbs;
+			ior->cb_id = b_shadow / hc->cbs - 1;
 		} else {			/* middle sub io */
 			ior->offset = a_shadow + (uint64_t) i * hc->cbs;
 			ior->in_offset = 0;
@@ -305,6 +310,8 @@ int split_io(struct scsi_cmd *cmd, struct host_cache *hc)
 	dprintf("numa cache: start parse numa node split io\n");
 
 	/* reset network buffer location */
+	data_buf = NULL;
+	tcp_buf = NULL;
 	if (cmd->rdma == 1) {
 		data_buf = (struct iser_membuf *) cmd->netbuf;
 		/* ONLY read operation need reset nodeid */

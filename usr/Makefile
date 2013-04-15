@@ -35,7 +35,6 @@ TGTD_OBJS += cache.o hash.o
 LIBS += -lnuma
 endif
 
-
 INCLUDES += -I.
 
 CFLAGS += -D_GNU_SOURCE

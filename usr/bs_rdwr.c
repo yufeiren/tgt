@@ -124,6 +124,10 @@ static void bs_rdwr_request(struct scsi_cmd *cmd)
 		free(tmpbuf);
 
 		write_buf = scsi_get_out_buffer(cmd);
+#ifdef NUMA_CACHE
+		eprintf("This cmd: %d is not supported by NUMA Cache\n", \
+			cmd->scb[0]);
+#endif
 		goto write;
 	case COMPARE_AND_WRITE:
 		/* Blocks are transferred twice, first the set that
@@ -183,6 +187,10 @@ static void bs_rdwr_request(struct scsi_cmd *cmd)
 		free(tmpbuf);
 
 		write_buf = scsi_get_out_buffer(cmd) + length;
+#ifdef NUMA_CACHE
+		eprintf("This cmd: %d is not supported by NUMA Cache\n", \
+			cmd->scb[0]);
+#endif
 		goto write;
 	case SYNCHRONIZE_CACHE:
 	case SYNCHRONIZE_CACHE_16:
@@ -249,30 +257,61 @@ write:
 
 			nc_mutex_lock(&(nc->mutex));
 
-			/* if block is in cache, invalidate it */
+			/* if block is in cache, update it */
 			cb = get_cache_block(ior->tid, ior->lun, \
 					     ior->cb_id, nc);
 			if (cb->is_valid == CACHE_VALID) {	/* hit */
-				dprintf("numa cache: cache hit - update it adn write back\n");
+				dprintf("numa cache: cache hit - update it and write back\n");
 				memcpy(cb->addr + ior->in_offset, \
-				       scsi_get_out_buffer(cmd) + ior->m_offset,\
+				       scsi_get_out_buffer(cmd) + ior->m_offset, \
 				       ior->length);
-				/* write back whole cache block */
-				/* optimize this ? */
-				ret = pwrite64(fd, cb->addr, cb->cbs, \
-					       ior->offset);
+				/* O_DIRECT only need 512 byte
+				   alignment, instead of page
+				   alignment. Block device is already
+				   512 byte alignment. Therefore, we
+				   need only check whether the length
+				   is 512 byte alignment. */
+				sio_size = ior->length;
+				if ((ior->length % hc.dio_align) != 0) {
+					sio_size = (ior->length / hc.dio_align + 1) * hc.dio_align;
+				}
+
+				ret = pwrite64(fd, cb->addr + ior->in_offset, sio_size, \
+					       ior->offset + ior->in_offset);
+				if (ret != sio_size) {
+					eprintf("numa cache: pwirte64 failed - %d\n", ret);
+				}
+
 				nc_mutex_unlock(&(nc->mutex));
 				continue;
 			}
 
-			dprintf("numa cache: cache not hit - read it, and update it, and write back \n");
-			pread64(fd, cb->addr, cb->cbs, ior->offset);
+			dprintf("numa cache: cache not hit - read it,"
+				" and update it, and write back \n");
+			if ((ior->offset + cb->cbs) < cmd->dev->size)
+				sio_size = cb->cbs;
+			else
+				sio_size = cmd->dev->size - ior->offset - (uint64_t) ior->in_offset;
+			ret = pread64(fd, cb->addr, sio_size, ior->offset);
+			if (ret != sio_size)
+				eprintf("numa cache: pread64 failed - %d\n", ret);
+
+			/* update cache block */
 			memcpy(cb->addr + ior->in_offset, \
 			       scsi_get_out_buffer(cmd) + ior->m_offset,\
 			       ior->length);
 
-			/* write back whole cache */
-			ret = pwrite64(fd, cb->addr, cb->cbs, ior->offset);
+			/* write back */
+			sio_size = ior->length;
+			if ((ior->length % hc.dio_align) != 0) {
+				sio_size = (ior->length / hc.dio_align + 1) * hc.dio_align;
+			}
+			ret = pwrite64(fd, \
+				       cb->addr + ior->in_offset, \
+				       sio_size, \
+				       ior->offset + ior->in_offset);
+			if (ret != sio_size)
+				eprintf("numa cache: write64 failed - %d\n", ret);
 
 			/* update cb into cache */
 			cb->is_valid = CACHE_VALID;
@@ -378,10 +417,6 @@ write:
 			if (ret != cb->cbs)
 				set_medium_error(&result, &key, &asc);
 
-			/*			if ((cmd->scb[0] != READ_6) && (cmd->scb[1] & 0x10))
-				posix_fadvise(fd, ior->offset, ior->length,
-				POSIX_FADV_NOREUSE); */
-
 			/* copy data into memory */
 			dprintf("numa cache: copy data into memory\n");
 			dprintf("numa cache: memcpy %" PRId64 " %" PRId64 " %d\n", scsi_get_in_buffer(cmd) + (uint64_t) ior->m_offset, cb->addr + ((uint64_t) ior->in_offset), ior->length);
@@ -414,7 +449,9 @@ write:
 	case VERIFY_10:
 	case VERIFY_12:
 	case VERIFY_16:
+#ifndef NUMA_CACHE
 verify:
+#endif
 		length = scsi_get_out_length(cmd);
 
 		tmpbuf = malloc(length);
@@ -510,28 +547,27 @@ static int bs_rdwr_open(struct scsi_lu *lu, char *path, int *fd, uint64_t *size)
 	uint32_t blksize = 0;
 
 
-#ifndef NUMA_CACHE
-	*fd = backed_file_open(path, O_RDWR|O_LARGEFILE|lu->bsoflags, size,
-				&blksize);
-#else
-	/* for direct io */
+#ifdef NUMA_CACHE
 	*fd = backed_file_open(path, O_RDWR|O_LARGEFILE|O_DIRECT|lu->bsoflags, size,
 				&blksize);
 	if (*fd < 0)
 		eprintf("open file with O_DIRECT fail - %d(%s)\n", \
 			errno, strerror(errno));
+#else
+	*fd = backed_file_open(path, O_RDWR|O_LARGEFILE|lu->bsoflags, size,
+				&blksize);
 #endif
 	/* If we get access denied, try opening the file in readonly mode */
 	if (*fd == -1 && (errno == EACCES || errno == EROFS)) {
-#ifndef NUMA_CACHE
-		*fd = backed_file_open(path, O_RDONLY|O_LARGEFILE|lu->bsoflags,
-				       size, &blksize);
-#else
+#ifdef NUMA_CACHE
 		*fd = backed_file_open(path, O_RDONLY|O_LARGEFILE|O_DIRECT|lu->bsoflags,
 				       size, &blksize);
 		if (*fd < 0)
 			eprintf("open file with O_DIRECT fail - %d(%s)\n", \
 				errno, strerror(errno));
+#else
+		*fd = backed_file_open(path, O_RDONLY|O_LARGEFILE|lu->bsoflags,
+				       size, &blksize);
 #endif
 		lu->attrs.readonly = 1;
 	}

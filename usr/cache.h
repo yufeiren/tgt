@@ -68,6 +68,7 @@ struct host_cache {
 	int nr_cache_area;	/* cache area for each numa nodes */
 	size_t buffer_size;	/* cache size of all nodes together */
 	int cbs;		/* cache block size */
+	int dio_align;	/* memory alignment and IO size for direct IO */
 	unsigned seed;
 	struct numa_cache *nc;  /* pointer to numa caches */
 };

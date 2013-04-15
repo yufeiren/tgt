@@ -1182,7 +1182,9 @@ static struct iscsi_task *iscsi_alloc_task(struct iscsi_connection *conn,
 {
 	struct iscsi_hdr *req = (struct iscsi_hdr *) &conn->req.bhs;
 	struct iscsi_task *task;
+#ifndef NUMA_CACHE
 	void *buf;
+#endif
 
 	task = conn->tp->alloc_task(conn, ext_len);
 	if (!task)
@@ -1202,8 +1204,8 @@ static struct iscsi_task *iscsi_alloc_task(struct iscsi_connection *conn,
 		dprintf("numa cache: get tcp_buf, sz %d, addr %" PRIx64 "\n", \
 			task->tdbuf->sz, task->tdbuf->addr[0]);
 		task->data = task->tdbuf->addr[0];
-#endif
 		dprintf("numa cache: valloc %d bytes\n", data_len);
+#endif
 	}
 
 #ifdef NUMA_CACHE

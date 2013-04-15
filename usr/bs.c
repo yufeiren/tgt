@@ -467,13 +467,27 @@ void bs_thread_close(struct bs_thread_info *info)
 	int i;
 
 	info->stop = 1;
+#ifndef NUMA_CACHE
 	pthread_cond_broadcast(&info->pending_cond);
+#else
+	for (i = 0; i < info->nr_numa_nodes; i++) {
+		pthread_cond_broadcast(&info->pending_cond[i]);
+	}
+#endif
+
 
 	for (i = 0; info->worker_thread[i] && i < info->nr_worker_threads; i++)
 		pthread_join(info->worker_thread[i], NULL);
 
+#ifndef NUMA_CACHE
 	pthread_cond_destroy(&info->pending_cond);
 	pthread_mutex_destroy(&info->pending_lock);
+#else
+	for (i = 0; i < info->nr_numa_nodes; i++) {
+		pthread_cond_destroy(&info->pending_cond[i]);
+		pthread_mutex_destroy(&info->pending_lock[i]);
+	}
+#endif
 	pthread_mutex_destroy(&info->startup_lock);
 	free(info->worker_thread);
 
