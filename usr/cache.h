@@ -23,7 +23,8 @@
 struct cache_param {
 	size_t buffer_size;
 	int cbs;
-	int cache_way;	/* # of caches per node */
+	int cache_way;	/* # of partitions per node */
+	int cb_group;	/* consecutive cache blocks within a partition */
 	char *mem;	/* malloc or shm */
 };
 
@@ -68,16 +69,21 @@ struct host_cache {
 	int nr_cache_area;	/* cache area for each numa nodes */
 	size_t buffer_size;	/* cache size of all nodes together */
 	int cbs;		/* cache block size */
+	int cb_group;		/* # of consecutive blocks in a partition */
 	int dio_align;	/* memory alignment and IO size for direct IO */
 	unsigned seed;
 	struct numa_cache *nc;  /* pointer to numa caches */
 };
 
-int offset2ncid(uint64_t offset, struct host_cache *hc);
+static inline int offset2ncid(uint64_t offset, struct host_cache *hc)
+{
+	return (int) ( (offset / (uint64_t) (hc->cbs * hc->cb_group)) % (hc->nr_numa_nodes * hc->nr_cache_area) );
+}
 
-int offset2nodeid(uint64_t offset, struct host_cache *hc);
-
-int ncid2nodeid(int nc_id, struct host_cache *hc);
+static inline int ncid2nodeid(int nc_id, struct host_cache *hc)
+{
+	return nc_id / hc->nr_cache_area;
+}
 
 int alloc_nc(struct numa_cache *nc, struct host_cache *hc);
 

@@ -86,7 +86,7 @@ static void bs_rdwr_request(struct scsi_cmd *cmd)
 #ifdef NUMA_CACHE
 	struct sub_io_request *ior;
 	struct cache_block *cb;
-	struct numa_cache *nc;
+	struct numa_cache *nc, *nc_pre;
 	int sio_size;
 #endif
 
@@ -250,12 +250,19 @@ write:
 		dprintf("numa cache: =================================\n");
 		dprintf("numa cache: start serving a WRITE io request\n");
 
-		for (i = 0; i < cmd->nr_sior; i ++) {
+		nc = nc_pre = NULL;
+
+		for (i = 0; i < cmd->nr_sior; i ++, nc_pre = nc) {
 			dprintf("numa cache: sub request %d\n", i);
 			ior = &(cmd->sior[i]);
 			nc = &(hc.nc[ior->nc_id]);
 
-			nc_mutex_lock(&(nc->mutex));
+			if (nc != nc_pre) {
+				if (nc_pre != NULL)
+					nc_mutex_unlock(&(nc_pre->mutex));
+				nc_mutex_lock(&(nc->mutex));
+			}
+
 
 			/* if block is in cache, update it */
 			cb = get_cache_block(ior->tid, ior->lun, \
@@ -282,7 +289,6 @@ write:
 					eprintf("numa cache: pwirte64 failed - %d\n", ret);
 				}
 
-				nc_mutex_unlock(&(nc->mutex));
 				continue;
 			}
 
@@ -322,9 +328,10 @@ write:
 
 			dprintf("numa cache: insert cache block\n");
 			insert_cache_block(cb, nc);
-
-			nc_mutex_unlock(&(nc->mutex));
 		}
+
+		/* unlock current partition */
+		nc_mutex_unlock(&(nc->mutex));
 
 		dprintf("numa cache: finish serve an io request\n");
 		dprintf("numa cache: --------------------------------\n");
@@ -388,12 +395,18 @@ write:
 		dprintf("numa cache: =================================\n");
 		dprintf("numa cache: start serving a READ io request\n");
 
-		for (i = 0; i < cmd->nr_sior; i ++) {
+		nc = nc_pre = NULL;
+
+		for (i = 0; i < cmd->nr_sior; i ++, nc_pre = nc) {
 			dprintf("numa cache: sub request %d\n", i);
 			ior = &(cmd->sior[i]);
 			nc = &(hc.nc[ior->nc_id]);
 
-			nc_mutex_lock(&(nc->mutex));
+			if (nc != nc_pre) {
+				if (nc_pre != NULL)
+					nc_mutex_unlock(&(nc_pre->mutex));
+				nc_mutex_lock(&(nc->mutex));
+			}
 
 			/* chech if block is in cache */
 			cb = get_cache_block(ior->tid, ior->lun, \
@@ -401,7 +414,6 @@ write:
 			if (cb->is_valid == CACHE_VALID) {	/* hit */
 				dprintf("numa cache: cache hit\n");
 				memcpy(scsi_get_in_buffer(cmd) + ior->m_offset, cb->addr + ior->in_offset, ior->length);
-				nc_mutex_unlock(&(nc->mutex));
 				continue;
 			}
 
@@ -431,8 +443,8 @@ write:
 
 			dprintf("numa cache: insert cache block\n");
 			insert_cache_block(cb, nc);
-			nc_mutex_unlock(&(nc->mutex));
 		}
+		nc_mutex_unlock(&(nc->mutex));
 
 		dprintf("numa cache: finish serve an io request\n");
 		dprintf("numa cache: --------------------------------\n");

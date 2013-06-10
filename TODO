@@ -15,7 +15,7 @@ Support R/W via iscsi.
 1. write invalidate support - done
 2. multiple LUN support - done
 3. Asymantic system (Nodes have different systems)
-4. Cache refill when write IO request issues.
+4. Cache refill when write IO request issues. - done
 5. memcpy(src, dst). dst memory location improvement. - done
 6. numa_run_on_node should be happened before numa_alloc_onnode, otherwise
 numa_alloc_onnode would take no effect. bug this bug to community.
@@ -31,7 +31,10 @@ numa_alloc_onnode would take no effect. bug this bug to community.
 	read - 
 	write - read a cache block each time, update it, and write it back 
 13. WRITE policy: updating cache block instead of invalidate cache block - done
-14. take out NUMA-aware cache as an independent module for other software
-
+14. take out NUMA-aware cache as an independent module for other software - done
+15. Dynamic NUMA-aware memory allocation.
+16. Hashing method
+	partition
+	each partition stores continues blocks
 
 

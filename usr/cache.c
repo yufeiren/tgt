@@ -4,21 +4,6 @@
 
 #include "cache.h"
 
-int offset2ncid(uint64_t offset, struct host_cache *hc)
-{
-	return (int) (offset / (uint64_t) hc->cbs) % (hc->nr_numa_nodes * hc->nr_cache_area);
-}
-
-int offset2nodeid(uint64_t offset, struct host_cache *hc)
-{
-	return (int) (offset / (uint64_t) hc->cbs) % hc->nr_numa_nodes;
-}
-
-int ncid2nodeid(int nc_id, struct host_cache *hc)
-{
-	return nc_id / hc->nr_cache_area;
-}
-
 int init_cache(struct host_cache *hc, struct cache_param *cp)
 {
 	int i;
@@ -35,6 +20,7 @@ int init_cache(struct host_cache *hc, struct cache_param *cp)
 
 	hc->buffer_size = cp->buffer_size;
 	hc->cbs = cp->cbs;
+	hc->cb_group = cp->cb_group;
 	if (cp->cache_way == 0)
 		hc->nr_cache_area = 1;
 	else

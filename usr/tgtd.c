@@ -66,6 +66,7 @@ static struct option const long_options[] = {
 #ifdef NUMA_CACHE
 	{"cache_size", required_argument, 0, 's'},
 	{"cache_bs", required_argument, 0, 'c'},
+	{"cache_group", required_argument, 0, 'g'},
 	{"cache_way", required_argument, 0, 'w'},
 #endif
 	{0, 0, 0, 0},
@@ -74,7 +75,7 @@ static struct option const long_options[] = {
 #ifndef NUMA_CACHE
 static char *short_options = "fC:d:t:Vh";
 #else
-static char *short_options = "fC:d:t:Vhs:c:w:";
+static char *short_options = "fC:d:t:Vhc:g:s:w:";
 #endif
 static char *spare_args;
 
@@ -562,15 +563,20 @@ int main(int argc, char **argv)
 				bad_optarg(ret, ch, optarg);
 			break;
 #ifdef NUMA_CACHE
-		case 's':
-			cp.buffer_size = byte_atoi(optarg);
-			if (cp.buffer_size == 0)
-				bad_optarg(cp.buffer_size, ch, optarg);
-			break;
 		case 'c':
 			cp.cbs = (int) byte_atoi(optarg);
 			if (cp.cbs == 0)
 				bad_optarg(cp.cbs, ch, optarg);
+			break;
+		case 'g':
+			cp.cb_group = atoi(optarg);
+			if (cp.cb_group == 0)
+				bad_optarg(cp.cb_group, ch, optarg);
+			break;
+		case 's':
+			cp.buffer_size = byte_atoi(optarg);
+			if (cp.buffer_size == 0)
+				bad_optarg(cp.buffer_size, ch, optarg);
 			break;
 		case 'w':
 			cp.cache_way = atoi(optarg);
@@ -636,7 +642,9 @@ int main(int argc, char **argv)
 	bs_init();
 
 #ifdef NUMA_CACHE
-	init_cache(&hc, &cp);
+	err = init_cache(&hc, &cp);
+	if (err)
+		exit(1);
 #endif
 
 	event_loop();
