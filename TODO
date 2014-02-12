@@ -36,5 +36,6 @@ numa_alloc_onnode would take no effect. bug this bug to community.
 16. Hashing method
 	partition
 	each partition stores continues blocks
-
+17. Asymmantric memory layout system support.
+	use numa_node_size64() to get the memory size in each numa node
 
