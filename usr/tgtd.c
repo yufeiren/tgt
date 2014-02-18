@@ -527,6 +527,7 @@ int main(int argc, char **argv)
 	int ret;
 #ifdef NUMA_CACHE
 	struct cache_param cp;
+	init_cache_param(&cp);
 #endif
 	sa_new.sa_handler = signal_catch;
 	sigemptyset(&sa_new.sa_mask);

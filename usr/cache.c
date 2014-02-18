@@ -4,6 +4,16 @@
 
 #include "cache.h"
 
+void init_cache_param(struct cache_param *cp)
+{
+	cp->cbs = 4096;
+	cp->cache_way = 1;
+	cp->cb_group = 1;
+	cp->buffer_size = 1024 * 1024 * 1024;
+
+	return;
+}
+
 int init_cache(struct host_cache *hc, struct cache_param *cp)
 {
 	int i;

@@ -85,6 +85,8 @@ static inline int ncid2nodeid(int nc_id, struct host_cache *hc)
 	return nc_id / hc->nr_cache_area;
 }
 
+void init_cache_param(struct cache_param *cp);
+
 int alloc_nc(struct numa_cache *nc, struct host_cache *hc);
 
 int init_cache(struct host_cache *hc, struct cache_param *cp);
