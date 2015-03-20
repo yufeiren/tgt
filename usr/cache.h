@@ -30,6 +30,7 @@ struct cache_param {
 
 struct cache_block {
 	int is_valid;
+	int is_dirty;		/* dirty-clean-in_process */
 	int tid;		/* target id */
 	uint64_t lun;		/* logical unit number */
 	uint64_t dev_id;	/* correspondent device id */
@@ -37,6 +38,7 @@ struct cache_block {
 	uint32_t cbs;		/* cache block size */
 	int hit_count;		/* times of cache hit */
 	char *addr;
+	struct scsi_lu *lu;	/* write back */
 	pthread_mutex_t lock;
 	struct list_head list; /* a block either in hash table or in unused list*/
 	struct list_head hit_list;	/* hit count list - lru */
@@ -72,6 +74,7 @@ struct host_cache {
 	int cb_group;		/* # of consecutive blocks in a partition */
 	int dio_align;	/* memory alignment and IO size for direct IO */
 	unsigned seed;
+	pthread_t blk_flush_tid[32];	/* blk flush thread */
 	struct numa_cache *nc;  /* pointer to numa caches */
 };
 
@@ -125,3 +128,5 @@ void lru_hit_list(struct cache_block *cb, struct cache_block *head);
  */
 int split_io(struct scsi_cmd *cmd, struct host_cache *hc);
 
+/* write back flush thread */
+void *blk_flush(void *arg);

@@ -85,6 +85,7 @@ struct cache_block *get_cache_block(int tid, uint64_t lun, uint64_t cb_id, \
 	list_del(&(cur->hit_list));
 
 	cur->hit_count = 0;
+	cur->is_dirty = 0;
 	cur->is_valid = CACHE_INVALID;
 
 	return cur;

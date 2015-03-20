@@ -18,6 +18,7 @@ int init_cache(struct host_cache *hc, struct cache_param *cp)
 {
 	int i;
 	int total_nc;
+	int ret;
 
 	if (numa_available() != 0) {
 		eprintf("Does not support NUMA API\n");
@@ -66,7 +67,15 @@ int init_cache(struct host_cache *hc, struct cache_param *cp)
 			i, hc->nc[i].on_numa_node);
 	}
 
+	/* switch back to running node */
 	numa_run_on_node_mask(nodemask);
+
+	/* create write back thread */
+	ret = pthread_create(&hc->blk_flush_tid[0], NULL, blk_flush, hc);
+	if (ret != 0) {
+		eprintf("Create write back thread failed\n");
+		return -1;
+	}
 
 	return 0;
 }
@@ -139,6 +148,7 @@ int alloc_nc(struct numa_cache *nc, struct host_cache *hc)
 	/* add all cache blocks into unused list */
 	for (i = 0; i < nc->nb; i ++) {
 		nc->cb[i].is_valid = CACHE_INVALID;
+		nc->cb[i].is_dirty = 0;
 		nc->cb[i].cb_id = -1;
 		nc->cb[i].cbs = hc->cbs;
 		nc->cb[i].hit_count = 0;
@@ -365,3 +375,57 @@ int split_io(struct scsi_cmd *cmd, struct host_cache *hc)
 	return nodeid;
 }
 
+static void flush_nc(struct numa_cache *nc)
+{
+	/* travel lru list and write back dirty blocks
+	 * mark dirty blocks as clean
+	 */
+	int ret;
+	struct cache_block *cur;
+
+	list_for_each_entry(cur, &(nc->hit_list.hit_list), hit_list) {
+		if (cur->is_dirty == 0) {
+			dprintf("numa cache: this block is clean: off - 0x%lx\n", \
+				cur->cbs * cur->cb_id);
+			continue;
+		}
+		ret = pwrite64(cur->lu->fd, cur->addr, cur->cbs, \
+			     cur->cbs * cur->cb_id);
+		if (ret != cur->cbs) {
+			eprintf("numa cache: flush thread: write failed\n");
+			break;
+		}
+		dprintf("numa cache: write back: off - 0x%lx\n", \
+			cur->cbs * cur->cb_id);
+		cur->is_dirty = 0;
+	}
+
+	return;
+}
+
+void *blk_flush(void *arg)
+{
+	/* dirty ratio or interval time */
+	struct host_cache *hc = (struct host_cache *) arg;
+	struct numa_cache *nc;
+	int nr_nc, i;
+
+	nr_nc = hc->nr_numa_nodes * hc->nr_cache_area;
+
+	eprintf("numa cache blk_flush thread id: %ld\n", pthread_self());
+
+	for ( ; ; ) {
+		sleep(10);
+
+		/* clean each partition one by one */
+		for (i = 0; i < nr_nc; i++) {
+			nc = &hc->nc[i];
+			nc_mutex_lock(&(nc->mutex));
+			flush_nc(nc);
+			nc_mutex_unlock(&(nc->mutex));
+		}
+
+	}
+
+	pthread_exit(NULL);
+}

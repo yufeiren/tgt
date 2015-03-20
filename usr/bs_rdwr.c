@@ -283,11 +283,14 @@ write:
 					sio_size = (ior->length / hc.dio_align + 1) * hc.dio_align;
 				}
 
+				cb->is_dirty = 1;
+				cb->lu = cmd->dev;
+				/* write back by flusher thread
 				ret = pwrite64(fd, cb->addr + ior->in_offset, sio_size, \
 					       ior->offset + ior->in_offset);
 				if (ret != sio_size) {
 					eprintf("numa cache: pwirte64 failed - %d\n", ret);
-				}
+					}*/
 
 				continue;
 			}
@@ -298,16 +301,19 @@ write:
 				sio_size = cb->cbs;
 			else
 				sio_size = cmd->dev->size - ior->offset - (uint64_t) ior->in_offset;
-			ret = pread64(fd, cb->addr, sio_size, ior->offset);
-			if (ret != sio_size)
-				eprintf("numa cache: pread64 failed - %d\n", ret);
+
+			if (ior->length != cb->cbs) {
+				ret = pread64(fd, cb->addr, sio_size, ior->offset);
+				if (ret != sio_size)
+					eprintf("numa cache: pread64 failed - %d\n", ret);
+			}
 
 			/* update cache block */
 			memcpy(cb->addr + ior->in_offset, \
 			       scsi_get_out_buffer(cmd) + ior->m_offset,\
 			       ior->length);
 
-			/* write back */
+			/* write back
 			sio_size = ior->length;
 			if ((ior->length % hc.dio_align) != 0) {
 				sio_size = (ior->length / hc.dio_align + 1) * hc.dio_align;
@@ -317,14 +323,16 @@ write:
 				       sio_size, \
 				       ior->offset + ior->in_offset);
 			if (ret != sio_size)
-				eprintf("numa cache: write64 failed - %d\n", ret);
+				eprintf("numa cache: write64 failed - %d\n", ret); */
 
 			/* update cb into cache */
 			cb->is_valid = CACHE_VALID;
+			cb->is_dirty = 1;
 			cb->cb_id = ior->cb_id;
 			cb->dev_id = ior->dev_id;
 			cb->tid = ior->tid;
 			cb->lun = ior->lun;
+			cb->lu = cmd->dev;
 
 			dprintf("numa cache: insert cache block\n");
 			insert_cache_block(cb, nc);
@@ -440,6 +448,7 @@ write:
 			cb->dev_id = ior->dev_id;
 			cb->tid = ior->tid;
 			cb->lun = ior->lun;
+			cb->is_dirty = 0;
 
 			dprintf("numa cache: insert cache block\n");
 			insert_cache_block(cb, nc);

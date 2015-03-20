@@ -95,6 +95,7 @@ static void usage(int status)
 		"-s, --cache_size NNNN   specify the size of numa-aware cache for each numa node\n"
 		"-c, --cache_bs NNNN     specify the size of numa-aware cache block\n"
 		"-w, --cache-way NNNN    specify number of numa-aware cache per node\n"
+		"-g, --cache-group NNNN  putting contigous blocks in the same cache area\n"
 		"-d, --debug debuglevel  print debugging information\n"
 		"-V, --version           print version and exit\n"
 		"-h, --help              display this help and exit\n",
