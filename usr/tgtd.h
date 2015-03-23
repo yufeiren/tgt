@@ -219,6 +219,10 @@ struct scsi_lu {
 	struct list_head registration_list;
 	uint32_t prgeneration;
 	struct registration *pr_holder;
+#ifdef NUMA_CACHE
+	struct list_head dirty_list;
+	pthread_mutex_t dirty_lock;
+#endif
 
 	/* A pointer for each modules private use.
 	 * Currently used by ssc, smc and mmc modules.

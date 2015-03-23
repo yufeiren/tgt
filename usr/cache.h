@@ -42,6 +42,7 @@ struct cache_block {
 	pthread_mutex_t lock;
 	struct list_head list; /* a block either in hash table or in unused list*/
 	struct list_head hit_list;	/* hit count list - lru */
+	struct list_head dirty_list;	/* per lun dirty list */
 };
 
 struct cache_hash_table {
@@ -130,3 +131,6 @@ int split_io(struct scsi_cmd *cmd, struct host_cache *hc);
 
 /* write back flush thread */
 void *blk_flush(void *arg);
+
+void insert_lu_dirty(struct cache_block *cb, struct scsi_lu *lu);
+

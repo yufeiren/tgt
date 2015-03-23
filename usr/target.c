@@ -61,7 +61,11 @@ static struct device_type_template *device_type_lookup(int type)
 	return NULL;
 }
 
+#ifdef NUMA_CACHE
+LIST_HEAD(target_list);
+#else
 static LIST_HEAD(target_list);
+#endif
 
 static struct target *target_lookup(int tid)
 {
@@ -579,6 +583,11 @@ tgtadm_err tgt_device_create(int tid, int dev_type, uint64_t lun, char *params,
 	lu->tgt = target;
 	lu->lun = lun;
 	lu->bsoflags = lu_bsoflags;
+
+#ifdef NUMA_CACHE
+	pthread_mutex_init(&lu->dirty_lock, NULL);
+	INIT_LIST_HEAD(&lu->dirty_list);
+#endif
 
 	tgt_cmd_queue_init(&lu->cmd_queue);
 	INIT_LIST_HEAD(&lu->registration_list);

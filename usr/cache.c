@@ -4,6 +4,10 @@
 
 #include "cache.h"
 
+#include "tgtd.h"
+#include "target.h"
+extern struct list_head target_list;
+
 void init_cache_param(struct cache_param *cp)
 {
 	cp->cbs = 4096;
@@ -375,6 +379,31 @@ int split_io(struct scsi_cmd *cmd, struct host_cache *hc)
 	return nodeid;
 }
 
+static void flush_lu(struct scsi_lu *lu)
+{
+	struct cache_block *cur, *q;
+	int ret;
+
+	list_for_each_entry_safe(cur, q, &lu->dirty_list, dirty_list) {
+		/* cur = list_entry(pos, struct cache_block, dirty_list); */
+
+		/* write back */
+		ret = pwrite64(cur->lu->fd, cur->addr, cur->cbs, \
+			     cur->cbs * cur->cb_id);
+		if (ret != cur->cbs) {
+			eprintf("numa cache: flush thread: write failed\n");
+			break;
+		}
+		dprintf("numa cache: write back: off - 0x%lx\n", \
+			cur->cbs * cur->cb_id);
+
+		cur->is_dirty = 0;
+		list_del(&cur->dirty_list);
+	}
+
+	return;
+}
+
 static void flush_nc(struct numa_cache *nc)
 {
 	/* travel lru list and write back dirty blocks
@@ -390,7 +419,7 @@ static void flush_nc(struct numa_cache *nc)
 			continue;
 		}
 		ret = pwrite64(cur->lu->fd, cur->addr, cur->cbs, \
-			     cur->cbs * cur->cb_id);
+			       cur->cbs * cur->cb_id);
 		if (ret != cur->cbs) {
 			eprintf("numa cache: flush thread: write failed\n");
 			break;
@@ -410,22 +439,62 @@ void *blk_flush(void *arg)
 	struct numa_cache *nc;
 	int nr_nc, i;
 
+	struct target *target;
+	struct scsi_lu *lu;
+
 	nr_nc = hc->nr_numa_nodes * hc->nr_cache_area;
 
 	eprintf("numa cache blk_flush thread id: %ld\n", pthread_self());
 
 	for ( ; ; ) {
-		sleep(10);
+		sleep(5);
 
-		/* clean each partition one by one */
-		for (i = 0; i < nr_nc; i++) {
-			nc = &hc->nc[i];
-			nc_mutex_lock(&(nc->mutex));
-			flush_nc(nc);
-			nc_mutex_unlock(&(nc->mutex));
+		/* clean each target/lun one by one*/
+		list_for_each_entry(target, &target_list, target_siblings) {
+			list_for_each_entry(lu, &target->device_list, device_siblings) {
+				pthread_mutex_lock(&lu->dirty_lock);
+				dprintf("numa cache: clean an LUN\n");
+				flush_lu(lu);
+				dprintf("numa cache: clean an LUN finished\n");
+				pthread_mutex_unlock(&lu->dirty_lock);
+			}
 		}
 
+		/*
+		list_for_each_entry(cur, &(lu->dirty_list), dirty_list) {
+		for (i = 0; i < nr_nc; i++) {
+			nc = &hc->nc[i];
+			pthread_mutex_lock(&lu->dirty_lock);
+			flush_lu(lu);
+			pthread_mutex_unlock(&lu->dirty_lock);
+		}
+		*/
 	}
 
 	pthread_exit(NULL);
 }
+
+void insert_lu_dirty(struct cache_block *cb, struct scsi_lu *lu)
+{
+	struct cache_block *cur;
+
+	list_for_each_entry(cur, &(lu->dirty_list), dirty_list) {
+		/* already in dirty_list */
+		if (cb->cb_id == cur->cb_id)
+			return;
+
+		if (cb->cb_id < cur->cb_id) {
+			dprintf("numa cache: add cb_id %ld prior to %ld\n", \
+				cb->cb_id, cur->cb_id);
+			list_add(&cb->dirty_list, &cur->dirty_list);
+			return;
+		}
+	}
+
+	dprintf("numa cache: insert dirty block (%ld) into tail\n", \
+		cb->cb_id);
+	list_add_tail(&cb->dirty_list, &lu->dirty_list);
+
+	return;
+}
+

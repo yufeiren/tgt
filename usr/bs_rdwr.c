@@ -283,8 +283,18 @@ write:
 					sio_size = (ior->length / hc.dio_align + 1) * hc.dio_align;
 				}
 
+				if (cb->is_dirty == 1)
+					continue;
+
+				/* previously clean */
 				cb->is_dirty = 1;
 				cb->lu = cmd->dev;
+
+				/* insert into dirty list of this lu */
+				pthread_mutex_lock(&cb->lu->dirty_lock);
+				insert_lu_dirty(cb, cb->lu);
+				pthread_mutex_unlock(&cb->lu->dirty_lock);
+
 				/* write back by flusher thread
 				ret = pwrite64(fd, cb->addr + ior->in_offset, sio_size, \
 					       ior->offset + ior->in_offset);
@@ -336,6 +346,11 @@ write:
 
 			dprintf("numa cache: insert cache block\n");
 			insert_cache_block(cb, nc);
+
+			/* insert into dirty list */
+			pthread_mutex_lock(&cb->lu->dirty_lock);
+			insert_lu_dirty(cb, cb->lu);
+			pthread_mutex_unlock(&cb->lu->dirty_lock);
 		}
 
 		/* unlock current partition */
