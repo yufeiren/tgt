@@ -15,6 +15,7 @@ struct cache_block *get_cache_block(int tid, uint64_t lun, uint64_t cb_id, \
 	struct cache_hash_table *ht = &(nc->ht);
 	struct cache_block *hit_head = &(nc->hit_list);
 	int is_found;
+	int ret;
 
 	key = ht_hash_key(cb_id, ht);
 	dprintf("numa cache: this io key is %d\n", key);
@@ -71,11 +72,28 @@ struct cache_block *get_cache_block(int tid, uint64_t lun, uint64_t cb_id, \
 		eprintf("numa cache: there must be a bug here!\n");
 	}
 
-	/* get the last item */
-	pos = nc->hit_list.hit_list.prev;
-	cur = list_entry(pos, struct cache_block, hit_list);
-	dprintf("numa cache: LRU replace cache info %ld %d %ld\n",
-		cur->cb_id, cur->tid, cur->lun);
+	/* get the oldest un-dirty item */
+	list_for_each_prev(pos, &nc->hit_list.hit_list) {
+		cur = list_entry(pos, struct cache_block, hit_list);
+		if (cur->is_dirty == 0) {
+			dprintf("numa cache: LRU replace cache info %ld %d %ld\n",
+				cur->cb_id, cur->tid, cur->lun);
+			break;
+		}
+	}
+
+	/* all the blocks are dirty, write back the oldest one */
+	if (pos == &nc->hit_list.hit_list) {
+		cur = list_entry(nc->hit_list.hit_list.prev, \
+				 struct cache_block, hit_list);
+		ret = pwrite64(cur->lu->fd, cur->addr, cur->cbs, \
+			     cur->cbs * cur->cb_id);
+		if (ret != cur->cbs) {
+			eprintf("numa cache: flush thread: write failed\n");
+			return NULL;
+		}
+	}
+
 
 	dprintf("numa cache: delete from hash table\n");
 	/* delete from hash table */

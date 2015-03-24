@@ -134,3 +134,4 @@ void *blk_flush(void *arg);
 
 void insert_lu_dirty(struct cache_block *cb, struct scsi_lu *lu);
 
+void *wb_thr(void *arg);

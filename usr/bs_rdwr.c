@@ -578,6 +578,49 @@ verify:
 	}
 }
 
+#ifdef NUMA_CACHE
+static void flush_lu(struct scsi_lu *lu)
+{
+	struct cache_block *cur, *q;
+	int ret;
+
+	list_for_each_entry_safe(cur, q, &lu->dirty_list, dirty_list) {
+		/* write back */
+		ret = pwrite64(cur->lu->fd, cur->addr, cur->cbs, \
+			     cur->cbs * cur->cb_id);
+		if (ret != cur->cbs) {
+			eprintf("numa cache: flush thread: write failed\n");
+			break;
+		}
+		dprintf("numa cache: write back: off - 0x%lx\n", \
+			cur->cbs * cur->cb_id);
+
+		cur->is_dirty = 0;
+		list_del(&cur->dirty_list);
+	}
+
+	return;
+}
+
+static void *bs_rdwr_write_back(void *arg)
+{
+	struct scsi_lu *lu = (struct scsi_lu *) arg;
+
+	for ( ; ; ) {
+		sleep(5);
+
+		pthread_mutex_lock(&lu->dirty_lock);
+		dprintf("numa cache: clean an LUN: %ld\n", lu->lun);
+		flush_lu(lu);
+		dprintf("numa cache: cleaned an LUN: %ld\n", lu->lun);
+		pthread_mutex_unlock(&lu->dirty_lock);
+	}
+
+	pthread_exit(NULL);
+
+}
+#endif
+
 static int bs_rdwr_open(struct scsi_lu *lu, char *path, int *fd, uint64_t *size)
 {
 	uint32_t blksize = 0;
@@ -624,6 +667,18 @@ static void bs_rdwr_close(struct scsi_lu *lu)
 static tgtadm_err bs_rdwr_init(struct scsi_lu *lu)
 {
 	struct bs_thread_info *info = BS_THREAD_I(lu);
+	int ret;
+
+#ifdef NUMA_CACHE
+	/* write back thread */
+	ret = pthread_create(&lu->wb_tid, NULL, bs_rdwr_write_back, lu);
+	if (ret != 0) {
+		eprintf("numa cache: Create write back thread failed\n");
+		return TGTADM_NOMEM;
+	}
+	eprintf("numa cache: create a write back thread, tid %ld\n", \
+		lu->wb_tid);
+#endif
 
 	return bs_thread_open(info, bs_rdwr_request, nr_iothreads);
 }

@@ -222,6 +222,7 @@ struct scsi_lu {
 #ifdef NUMA_CACHE
 	struct list_head dirty_list;
 	pthread_mutex_t dirty_lock;
+	pthread_t wb_tid;
 #endif
 
 	/* A pointer for each modules private use.

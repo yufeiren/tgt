@@ -74,12 +74,12 @@ int init_cache(struct host_cache *hc, struct cache_param *cp)
 	/* switch back to running node */
 	numa_run_on_node_mask(nodemask);
 
-	/* create write back thread */
+	/* create write back thread
 	ret = pthread_create(&hc->blk_flush_tid[0], NULL, blk_flush, hc);
 	if (ret != 0) {
 		eprintf("Create write back thread failed\n");
 		return -1;
-	}
+		}*/
 
 	return 0;
 }
@@ -430,6 +430,12 @@ static void flush_nc(struct numa_cache *nc)
 	}
 
 	return;
+}
+
+void *wb_thr(void *arg)
+{
+
+	pthread_exit(NULL);
 }
 
 void *blk_flush(void *arg)
