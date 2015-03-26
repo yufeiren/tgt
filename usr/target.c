@@ -589,7 +589,10 @@ tgtadm_err tgt_device_create(int tid, int dev_type, uint64_t lun, char *params,
 
 #ifdef NUMA_CACHE
 	pthread_mutex_init(&lu->dirty_lock, NULL);
-	INIT_LIST_HEAD(&lu->dirty_list);
+	INIT_LIST_HEAD(&lu->dl[0]);
+	INIT_LIST_HEAD(&lu->dl[1]);
+	lu->dl_attach = &lu->dl[0];
+	lu->dl_dump = &lu->dl[1];
 #endif
 
 	tgt_cmd_queue_init(&lu->cmd_queue);

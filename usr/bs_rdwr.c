@@ -584,7 +584,7 @@ static void flush_lu(struct scsi_lu *lu)
 	struct cache_block *cur, *q;
 	int ret;
 
-	list_for_each_entry_safe(cur, q, &lu->dirty_list, dirty_list) {
+	list_for_each_entry_safe(cur, q, lu->dl_dump, dirty_list) {
 		/* write back */
 		ret = pwrite64(cur->lu->fd, cur->addr, cur->cbs, \
 			     cur->cbs * cur->cb_id);
@@ -605,15 +605,33 @@ static void flush_lu(struct scsi_lu *lu)
 static void *bs_rdwr_write_back(void *arg)
 {
 	struct scsi_lu *lu = (struct scsi_lu *) arg;
+	int is_empty;
 
 	for ( ; ; ) {
-		sleep(5);
+		is_empty = 1;
 
 		pthread_mutex_lock(&lu->dirty_lock);
+		/* swap list */
+		if (!list_empty(lu->dl_attach)) {
+			if (lu->dl_attach == &lu->dl[0]) {
+				lu->dl_attach = &lu->dl[1];
+				lu->dl_dump = &lu->dl[0];
+			} else {
+				lu->dl_attach = &lu->dl[0];
+				lu->dl_dump = &lu->dl[1];
+			}
+			is_empty = 0;
+		}
+		pthread_mutex_unlock(&lu->dirty_lock);
+
+		if (is_empty) {
+			sleep(3);
+			continue;
+		}
+
 		dprintf("numa cache: clean an LUN: %ld\n", lu->lun);
 		flush_lu(lu);
 		dprintf("numa cache: cleaned an LUN: %ld\n", lu->lun);
-		pthread_mutex_unlock(&lu->dirty_lock);
 	}
 
 	pthread_exit(NULL);

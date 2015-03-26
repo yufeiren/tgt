@@ -384,7 +384,7 @@ static void flush_lu(struct scsi_lu *lu)
 	struct cache_block *cur, *q;
 	int ret;
 
-	list_for_each_entry_safe(cur, q, &lu->dirty_list, dirty_list) {
+	list_for_each_entry_safe(cur, q, lu->dl_dump, dirty_list) {
 		/* cur = list_entry(pos, struct cache_block, dirty_list); */
 
 		/* write back */
@@ -484,7 +484,7 @@ void insert_lu_dirty(struct cache_block *cb, struct scsi_lu *lu)
 {
 	struct cache_block *cur;
 
-	list_for_each_entry(cur, &(lu->dirty_list), dirty_list) {
+	list_for_each_entry(cur, lu->dl_attach, dirty_list) {
 		/* already in dirty_list */
 		if (cb->cb_id == cur->cb_id)
 			return;
@@ -499,8 +499,7 @@ void insert_lu_dirty(struct cache_block *cb, struct scsi_lu *lu)
 
 	dprintf("numa cache: insert dirty block (%ld) into tail\n", \
 		cb->cb_id);
-	list_add_tail(&cb->dirty_list, &lu->dirty_list);
+	list_add_tail(&cb->dirty_list, lu->dl_attach);
 
 	return;
 }
-

@@ -220,7 +220,10 @@ struct scsi_lu {
 	uint32_t prgeneration;
 	struct registration *pr_holder;
 #ifdef NUMA_CACHE
-	struct list_head dirty_list;
+	/* dirty list needs a scalable solution */
+	struct list_head *dl_attach;	/* for attach */
+	struct list_head *dl_dump;	/* for dump data */
+	struct list_head dl[2];
 	pthread_mutex_t dirty_lock;
 	pthread_t wb_tid;
 #endif
