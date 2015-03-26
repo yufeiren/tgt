@@ -1,6 +1,10 @@
 #ifndef __TARGET_DAEMON_H
 #define __TARGET_DAEMON_H
 
+#ifdef NUMA_CACHE
+#include <libaio.h>
+#endif
+
 #include "log.h"
 #include "scsi_cmnd.h"
 #include "tgtadm_error.h"
@@ -226,6 +230,13 @@ struct scsi_lu {
 	struct list_head dl[2];
 	pthread_mutex_t dirty_lock;
 	pthread_t wb_tid;
+	/* for asynchronous IO */
+	int is_async_wb;
+	int aio_depth;			/* max onflight blocks */
+	io_context_t aio_ctx;
+	struct io_event *aio_events;
+	struct iocb **iocbs;
+	struct iocb *iocb;
 #endif
 
 	/* A pointer for each modules private use.

@@ -33,6 +33,9 @@
 
 #include <linux/fs.h>
 #include <sys/epoll.h>
+#ifdef NUMA_CACHE
+#include <libaio.h>
+#endif
 
 #include "list.h"
 #include "util.h"
@@ -579,7 +582,7 @@ verify:
 }
 
 #ifdef NUMA_CACHE
-static void flush_lu(struct scsi_lu *lu)
+static void flush_lu_sync(struct scsi_lu *lu)
 {
 	struct cache_block *cur, *q;
 	int ret;
@@ -602,10 +605,107 @@ static void flush_lu(struct scsi_lu *lu)
 	return;
 }
 
+static void flush_lu_async(struct scsi_lu *lu)
+{
+	struct cache_block *cur, *q;
+	int ret;
+	int submitted_nr = 0;
+	int completed_nr = 0;
+	int queued_nr = 0;
+	struct iocb **iocbs;
+	int iocbs_nr;
+	int i, r;
+
+	/* dump queue is not empty or need reap */
+	while (!list_empty(lu->dl_dump) || (queued_nr != 0)) {
+		/* keep submitting until full */
+		iocbs_nr = 0;
+		while ((iocbs_nr < lu->aio_depth - queued_nr) 
+		       && !list_empty(lu->dl_dump)) {
+			cur = list_first_entry(lu->dl_dump,\
+					       struct cache_block, \
+					       dirty_list);
+			list_del(&cur->dirty_list);
+
+			lu->iocbs[iocbs_nr] = &lu->iocb[iocbs_nr];
+
+			io_prep_pwrite(lu->iocbs[iocbs_nr], \
+				       lu->fd, \
+				       cur->addr, \
+				       cur->cbs, cur->cbs * cur->cb_id);
+			/* setup context */
+			lu->iocb[iocbs_nr].data = cur;
+			iocbs_nr ++;
+		}
+
+		if (iocbs_nr > 0) {
+			/* submit IO */
+		resubmit:
+			r = io_submit(lu->aio_ctx, iocbs_nr, lu->iocbs);
+			if (r != iocbs_nr)
+				goto resubmit;
+			queued_nr += r;
+			dprintf("aio: submitted %d IOs\n", r);
+		}
+
+		/* reap if some items are queued */
+		if (queued_nr > 0) {
+			r = io_getevents(lu->aio_ctx, 1, queued_nr, \
+					 lu->aio_events, NULL);
+			for (i = 0; i < r; i++) {
+				cur = (struct cache_block *) lu->aio_events[i].data;
+				cur->is_dirty = 0;
+			}
+			queued_nr -= r;
+			dprintf("aio: reaped %d IOs\n", r);
+		}
+	}
+
+	return;
+}
+
+static int bs_rdwr_async_init(struct scsi_lu *lu)
+{
+	int ret;
+
+	/* setup async context */
+	ret = io_setup(lu->aio_depth, &lu->aio_ctx);
+	if (ret)
+		return 1;
+
+	lu->aio_events = (struct io_event *) malloc(lu->aio_depth \
+					* sizeof(struct io_event));
+	if (lu->aio_events == NULL)
+		return 1;
+	memset(lu->aio_events, '\0', lu->aio_depth * sizeof(struct io_event));
+
+	lu->iocbs = (struct iocb **) malloc(lu->aio_depth \
+					    * sizeof(struct iocb *));
+	if (lu->iocbs == NULL)
+		return 1;
+	memset(lu->iocbs, '\0', lu->aio_depth * sizeof(struct iocb *));
+
+	lu->iocb = (struct iocb *) malloc(lu->aio_depth \
+					    * sizeof(struct iocb));
+	if (lu->iocb == NULL)
+		return 1;
+	memset(lu->iocb, '\0', lu->aio_depth * sizeof(struct iocb));
+
+	return 0;
+}
+
 static void *bs_rdwr_write_back(void *arg)
 {
 	struct scsi_lu *lu = (struct scsi_lu *) arg;
 	int is_empty;
+	int ret;
+
+	if (lu->is_async_wb) {
+		dprintf("aio: using aio write back\n");
+		ret = bs_rdwr_async_init(lu);
+		if (ret)
+			goto thr_exit;
+	}
 
 	for ( ; ; ) {
 		is_empty = 1;
@@ -630,12 +730,17 @@ static void *bs_rdwr_write_back(void *arg)
 		}
 
 		dprintf("numa cache: clean an LUN: %ld\n", lu->lun);
-		flush_lu(lu);
+		if (lu->is_async_wb) {
+			dprintf("aio: starting write back\n");
+			flush_lu_async(lu);
+			dprintf("aio: finished write back\n");
+		} else
+			flush_lu_sync(lu);
 		dprintf("numa cache: cleaned an LUN: %ld\n", lu->lun);
 	}
 
+thr_exit:
 	pthread_exit(NULL);
-
 }
 #endif
 

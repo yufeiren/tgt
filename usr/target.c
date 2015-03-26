@@ -593,6 +593,8 @@ tgtadm_err tgt_device_create(int tid, int dev_type, uint64_t lun, char *params,
 	INIT_LIST_HEAD(&lu->dl[1]);
 	lu->dl_attach = &lu->dl[0];
 	lu->dl_dump = &lu->dl[1];
+	lu->aio_depth = 8;
+	lu->is_async_wb = 1;
 #endif
 
 	tgt_cmd_queue_init(&lu->cmd_queue);
