@@ -70,11 +70,17 @@ static struct list_head iser_dev_list;
 
 /* all iser connections */
 static struct list_head iser_conn_list;
+#ifdef MUL_EV_LOOP
+static pthread_mutex_t iser_conn_list_lock;
+#endif
 
 #define uint64_from_ptr(p) (uint64_t)(uintptr_t)(p)
 #define ptr_from_int64(p) (void *)(unsigned long)(p)
 
 #define ISER_LISTEN_PORT 3260
+
+static int num_delayed_arm;
+#define MAX_NUM_DELAYED_ARM 16
 
 short int iser_listen_port = ISER_LISTEN_PORT;
 char *iser_portal_addr;
@@ -135,6 +141,17 @@ static void iser_sched_post_recv(struct event_data *evt);
 static void iser_sched_buf_alloc(struct event_data *evt);
 static void iser_sched_iosubmit(struct event_data *evt);
 static void iser_sched_rdma_rd(struct event_data *evt);
+
+#ifdef MUL_EV_LOOP
+static int conn_event_add(int fd, int events, \
+			  event_handler_t handler, void *data);
+static void conn_add_sched_event(struct event_data *evt, \
+				 struct iser_conn *conn);
+static void conn_handle_cq_event(int fd, int events, void *data);
+static void *conn_event_loop(void *arg);
+static void conn_sched_poll_cq(struct event_data *tev);
+static void conn_sched_consume_cq(struct event_data *tev);
+#endif
 
 static inline void schedule_task_iosubmit(struct iser_task *task,
 					  struct iser_conn *conn)
@@ -706,6 +723,10 @@ static int iser_init_rdma_buf_pool(struct iser_device *dev)
 	INIT_LIST_HEAD(&dev->membuf_free);
 	INIT_LIST_HEAD(&dev->membuf_alloc);
 
+#ifdef MUL_EV_LOOP
+	pthread_mutex_init(&dev->membuf_lock, NULL);
+#endif
+
 #ifdef NUMA_CACHE
 	struct bitmask *nodemask;
 	nodemask = numa_get_run_node_mask();
@@ -797,11 +818,16 @@ static struct iser_membuf *iser_dev_alloc_rdma_buf(struct iser_device *dev)
 	if (unlikely(list_empty(&dev->membuf_free)))
 		return NULL;
 
+#ifdef MUL_EV_LOOP
+	pthread_mutex_lock(&dev->membuf_lock);
+#endif
 	rdma_buf = list_first_entry(&dev->membuf_free, struct iser_membuf,
 				    pool_list);
 	list_del(&rdma_buf->pool_list);
 	list_add_tail(&rdma_buf->pool_list, &dev->membuf_alloc);
-
+#ifdef MUL_EV_LOOP
+	pthread_mutex_unlock(&dev->membuf_lock);
+#endif
 	dprintf("alloc:%p\n", rdma_buf);
 	return rdma_buf;
 }
@@ -816,8 +842,14 @@ static void iser_dev_free_rdma_buf(struct iser_device *dev, struct iser_membuf *
 	dprintf("free %p\n", rdma_buf);
 
 	/* add to the free list head to reuse recently used buffers first */
+#ifdef MUL_EV_LOOP
+	pthread_mutex_lock(&dev->membuf_lock);
+#endif
 	list_del(&rdma_buf->pool_list);
 	list_add(&rdma_buf->pool_list, &dev->membuf_free);
+#ifdef MUL_EV_LOOP
+	pthread_mutex_unlock(&dev->membuf_lock);
+#endif
 }
 
 static int iser_task_alloc_rdma_bufs(struct iser_task *task)
@@ -1352,6 +1384,11 @@ int iser_conn_init(struct iser_conn *conn)
 
 	INIT_LIST_HEAD(&conn->h.clist);
 
+#ifdef MUL_EV_LOOP
+	INIT_LIST_HEAD(&conn->sched_events_list);
+	INIT_LIST_HEAD(&conn->events_list);
+#endif
+
 	INIT_LIST_HEAD(&conn->buf_alloc_list);
 	INIT_LIST_HEAD(&conn->rdma_rd_list);
 	/* INIT_LIST_HEAD(&conn->rdma_wr_list); */
@@ -1383,7 +1420,13 @@ void iser_conn_close(struct iser_conn *conn)
 	if (err)
 		eprintf("conn:%p rdma_disconnect failed, %m\n", &conn->h);
 
+#ifdef MUL_EV_LOOP
+	pthread_mutex_lock(&iser_conn_list_lock);
+#endif
 	list_del(&conn->conn_list);
+#ifdef MUL_EV_LOOP
+	pthread_mutex_unlock(&iser_conn_list_lock);
+#endif
 
 	tgt_remove_sched_event(&conn->sched_buf_alloc);
 	tgt_remove_sched_event(&conn->sched_rdma_rd);
@@ -1552,6 +1595,9 @@ static void iser_cm_connect_request(struct rdma_cm_event *ev)
 	struct iser_conn *conn;
 	struct iser_device *dev;
 	int err, dev_found;
+#ifdef MUL_EV_LOOP
+	int cqe_num;
+#endif
 
 	struct rdma_conn_param conn_param = {
 		.responder_resources = 1,
@@ -1594,7 +1640,81 @@ static void iser_cm_connect_request(struct rdma_cm_event *ev)
 		goto reject;
 	}
 	dprintf("alloc conn:%p cm_id:%p\n", &conn->h, cm_id);
+#ifdef MUL_EV_LOOP
+	pthread_mutex_lock(&iser_conn_list_lock);
+#endif
 	list_add(&conn->conn_list, &iser_conn_list);
+#ifdef MUL_EV_LOOP
+	pthread_mutex_unlock(&iser_conn_list_lock);
+#endif
+
+#ifdef MUL_EV_LOOP
+	/* create a dedicate cq for a new connection */
+	conn->cq_channel = ibv_create_comp_channel(dev->ibv_ctxt);
+	if (dev->cq_channel == NULL) {
+		eprintf("ibv_create_comp_channel failed\n");
+		goto free_conn;
+	}
+	dprintf("(per conn) cq channel fd: %d\n", conn->cq_channel->fd);
+
+	/* verify cq_vector */
+	if (cq_vector < 0)
+		cq_vector = control_port % dev->ibv_ctxt->num_comp_vectors;
+	else if (cq_vector >= dev->ibv_ctxt->num_comp_vectors) {
+		eprintf("(per conn)Bad CQ vector. max: %d\n",
+			dev->ibv_ctxt->num_comp_vectors);
+		goto free_conn;
+	}
+	dprintf("(per conn) CQ vector: %d\n", cq_vector);
+
+	cqe_num = min(dev->device_attr.max_cqe, MAX_CQ_ENTRIES);
+	dprintf("(per conn) max %d CQEs\n", cqe_num);
+
+	conn->cq = ibv_create_cq(dev->ibv_ctxt, cqe_num, NULL,
+				 conn->cq_channel, cq_vector);
+	if (conn->cq == NULL) {
+		eprintf("(per conn) ibv_create_cq failed\n");
+		goto free_conn;
+	}
+	dprintf("conn->cq:%p\n", conn->cq);
+
+	tgt_init_sched_event(&conn->poll_sched, conn_sched_poll_cq, conn);
+
+	err = ibv_req_notify_cq(conn->cq, 0);
+	if (err) {
+		eprintf("(per conn) ibv_req_notify failed, %m\n");
+		goto free_conn;
+	}
+
+	/* create an event poll for this connection */
+	conn->ep_fd = epoll_create(4096);
+	if (conn->ep_fd < 0) {
+		fprintf(stderr, "(per conn) can't create epoll fd, %m\n");
+		goto free_conn;
+	}
+	dprintf("(per conn) create a new event poll - %d\n", conn->ep_fd);
+
+	/* create a dedicate event_base loop thread */
+	err = pthread_create(&conn->ev_tid, NULL, conn_event_loop, conn);
+	if (err) {
+		eprintf("(per conn) can not create thread: %m\n");
+		goto free_conn;
+	}
+
+	dprintf("(per conn) conn: %p\n", conn);
+	dprintf("(per conn) conn cq fd: %d\n", conn->cq_channel->fd);
+	dprintf("(per conn) EPOLLIN: %d\n", EPOLLIN);
+	dprintf("(per conn) conn handle cq event: %p\n", conn_handle_cq_event);
+
+	/* add cq channel into new ep_fd */
+	err = conn_event_add(conn->cq_channel->fd, EPOLLIN,
+			     conn_handle_cq_event, conn);
+	if (err) {
+		eprintf("conn_event_add failed, %m\n");
+		goto free_conn;
+	}
+	dprintf("(per conn) conn_event_add success\n");
+#endif
 
 	/* relate iser and rdma connections */
 	conn->cm_id = cm_id;
@@ -1634,8 +1754,13 @@ static void iser_cm_connect_request(struct rdma_cm_event *ev)
 	memset(&qp_init_attr, 0, sizeof(qp_init_attr));
 	qp_init_attr.qp_context = conn;
 	/* both send and recv to the same CQ */
+#ifdef MUL_EV_LOOP
+	qp_init_attr.send_cq = conn->cq;
+	qp_init_attr.recv_cq = conn->cq;
+#else
 	qp_init_attr.send_cq = dev->cq;
 	qp_init_attr.recv_cq = dev->cq;
+#endif
 	qp_init_attr.cap.max_send_wr = MAX_WQE;
 	qp_init_attr.cap.max_recv_wr = MAX_WQE;
 	qp_init_attr.cap.max_send_sge = 1;      /* scatter/gather entries */
@@ -3159,9 +3284,6 @@ static int iser_poll_cq(struct iser_device *dev, int max_wc)
 	return err;
 }
 
-static int num_delayed_arm;
-#define MAX_NUM_DELAYED_ARM 16
-
 static void iser_rearm_completions(struct iser_device *dev)
 {
 	int err;
@@ -3503,6 +3625,9 @@ static int iser_ib_init(void)
 	INIT_LIST_HEAD(&iser_dev_list);
 	INIT_LIST_HEAD(&iser_conn_list);
 	INIT_LIST_HEAD(&temp_conn);
+#ifdef MUL_EV_LOOP
+	pthread_mutex_init(&iser_conn_list_lock, NULL);
+#endif
 
 	return err;
 }
@@ -3550,6 +3675,201 @@ static void iser_nop_work_handler(void *data)
 
 	add_work(&nop_work, ISER_TIMER_INT_SEC);
 }
+
+#ifdef MUL_EV_LOOP
+static int conn_poll_cq(struct iser_conn *conn, int max_wc)
+{
+	int err = 0, numwc = 0;
+	struct ibv_wc wc;
+
+	for (;;) {
+		err = ibv_poll_cq(conn->cq, 1, &wc);
+		if (err == 0) /* no completions retrieved */
+			break;
+
+		if (unlikely(err < 0)) {
+			eprintf("ibv_poll_cq failed\n");
+			break;
+		}
+
+		VALGRIND_MAKE_MEM_DEFINED(&wc, sizeof(wc));
+		if (likely(wc.status == IBV_WC_SUCCESS))
+			handle_wc(&wc);
+		else
+			handle_wc_error(&wc);
+
+		if (++numwc == max_wc) {
+			err = 1;
+			break;
+		}
+	}
+	return err;
+}
+
+static void conn_sched_consume_cq(struct event_data *tev)
+{
+	struct iser_conn *conn = tev->data;
+	int err;
+
+	err = conn_poll_cq(conn, MAX_POLL_WC);
+	if (err > 0) {
+		conn->poll_sched.sched_handler = conn_sched_consume_cq;
+		conn_add_sched_event(&conn->poll_sched, conn);
+	}
+}
+
+static void conn_rearm_completions(struct iser_conn *conn)
+{
+	int err;
+
+	err = ibv_req_notify_cq(conn->cq, 0);
+	if (unlikely(err))
+		eprintf("(per conn) ibv_req_notify_cq failed\n");
+
+	conn->poll_sched.sched_handler = conn_sched_consume_cq;
+	conn_add_sched_event(&conn->poll_sched, conn);
+
+	conn->num_delayed_arm = 0;
+}
+
+static void conn_poll_cq_armable(struct iser_conn *conn)
+{
+	int err;
+
+	err = conn_poll_cq(conn, MAX_POLL_WC);
+	if (unlikely(err < 0)) {
+		conn_rearm_completions(conn);
+		return;
+	}
+
+	if (err == 0 && (++conn->num_delayed_arm == MAX_NUM_DELAYED_ARM))
+		/* no more completions on cq, give up and arm the interrupts */
+		conn_rearm_completions(conn);
+	else {
+		conn->poll_sched.sched_handler = conn_sched_poll_cq;
+		conn_add_sched_event(&conn->poll_sched, conn);
+	}
+}
+
+static void conn_handle_cq_event(int fd, int events, void *data)
+{
+	struct iser_conn *conn = data;
+	void *cq_context;
+	int err;
+
+	err = ibv_get_cq_event(conn->cq_channel, &conn->cq, &cq_context);
+	if (unlikely(err != 0)) {
+		/* Just print the log message, if that was a serious problem,
+		   it will express itself elsewhere */
+		eprintf("(per conn) failed to retrieve CQ event, cq:%p\n", conn->cq);
+		return;
+	}
+
+	ibv_ack_cq_events(conn->cq, 1);
+
+	/* if a poll was previosuly scheduled, remove it,
+	   as it will be scheduled when necessary */
+	if (conn->poll_sched.scheduled)
+		tgt_remove_sched_event(&conn->poll_sched);
+
+	conn_poll_cq_armable(conn);
+}
+
+static void conn_sched_poll_cq(struct event_data *tev)
+{
+	struct iser_conn *conn = tev->data;
+	conn_poll_cq_armable(conn);
+}
+
+static void conn_add_sched_event(struct event_data *evt, struct iser_conn *conn)
+{
+	if (!evt->scheduled) {
+		evt->scheduled = 1;
+		list_add_tail(&evt->e_list, &conn->sched_events_list);
+	}
+}
+
+static int conn_exec_scheduled(struct iser_conn *conn)
+{
+	struct list_head *last_sched;
+	struct event_data *tev, *tevn;
+	int work_remains = 0;
+
+	if (!list_empty(&conn->sched_events_list)) {
+		/* execute only work scheduled till now */
+		last_sched = conn->sched_events_list.prev;
+		list_for_each_entry_safe(tev, tevn, &conn->sched_events_list,
+					 e_list) {
+			tgt_remove_sched_event(tev);
+			tev->sched_handler(tev);
+			if (&tev->e_list == last_sched)
+				break;
+		}
+		if (!list_empty(&conn->sched_events_list))
+			work_remains = 1;
+	}
+	return work_remains;
+}
+
+static void *conn_event_loop(void *arg)
+{
+	struct iser_conn *conn = (struct iser_conn *) arg;
+	int nevent, i, sched_remains, timeout;
+	struct epoll_event events[1024];
+	struct event_data *tev;
+
+retry:
+	sched_remains = conn_exec_scheduled(conn);
+	timeout = sched_remains ? 0 : -1;
+
+	nevent = epoll_wait(conn->ep_fd, events, ARRAY_SIZE(events), timeout);
+	if (nevent < 0) {
+		if (errno != EINTR) {
+			eprintf("%m\n");
+			exit(1);
+		}
+	} else if (nevent) {
+		for (i = 0; i < nevent; i++) {
+			tev = (struct event_data *) events[i].data.ptr;
+			tev->handler(tev->fd, events[i].events, tev->data);
+		}
+	}
+
+	if (system_active)
+		goto retry;
+
+	pthread_exit(NULL);
+}
+
+static int conn_event_add(int fd, int events, \
+		   event_handler_t handler, void *data)
+{
+	struct epoll_event ev;
+	struct event_data *tev;
+	struct iser_conn *conn = (struct iser_conn *) data;
+	int err;
+
+	tev = zalloc(sizeof(*tev));
+	if (!tev)
+		return -ENOMEM;
+
+	tev->data = data;
+	tev->handler = handler;
+	tev->fd = fd;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = events;
+	ev.data.ptr = tev;
+	err = epoll_ctl(conn->ep_fd, EPOLL_CTL_ADD, fd, &ev);
+	if (err) {
+		eprintf("(per conn) Cannot add fd, %m\n");
+		free(tev);
+	} else
+		list_add(&tev->e_list, &conn->events_list);
+
+	return err;
+}
+#endif
 
 static int iser_init(int index, char *args)
 {

@@ -187,6 +187,18 @@ enum iser_login_phase
 struct iser_conn {
 	struct iscsi_connection h;
 
+#ifdef MUL_EV_LOOP
+	struct ibv_cq *cq;	/* per connection completion queue */
+	struct ibv_comp_channel *cq_channel;
+	struct event_data poll_sched;
+	struct list_head events_list;
+	struct list_head sched_events_list;
+	int num_delayed_arm;
+	pthread_t ev_tid;
+	int ep_fd;
+
+	/* response related resources */
+#endif
 	struct ibv_qp *qp_hndl;
 	struct rdma_cm_id *cm_id;
 	struct iser_device *dev;
@@ -272,8 +284,14 @@ struct iser_device {
 
 	struct event_data poll_sched;
 
+	/* event poll for this device */
+	int ep_fd;
+
 	/* free and allocated membuf entries */
 	struct list_head membuf_free, membuf_alloc;
+#ifdef MUL_EV_LOOP
+	pthread_mutex_t membuf_lock;
+#endif
 };
 
 void iser_login_exec(struct iscsi_connection *iscsi_conn,

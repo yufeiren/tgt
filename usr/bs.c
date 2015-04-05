@@ -277,6 +277,7 @@ static void *bs_thread_worker_fn(void *arg)
 #endif
 		info->request_fn(cmd);
 
+		/* distribute finished cmds to different event poll */
 		pthread_mutex_lock(&finished_lock);
 		list_add_tail(&cmd->bs_list, &finished_list);
 		pthread_mutex_unlock(&finished_lock);
