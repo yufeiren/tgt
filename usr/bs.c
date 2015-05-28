@@ -42,6 +42,12 @@
 #include "cache.h"
 #endif
 
+#ifdef MUL_EV_LOOP
+#include <infiniband/verbs.h>
+#include <rdma/rdma_cma.h>
+#include "iscsi/iser.h"
+#endif
+
 #ifdef NUMA_CACHE
 extern struct host_cache hc;
 #endif
@@ -277,7 +283,18 @@ static void *bs_thread_worker_fn(void *arg)
 #endif
 		info->request_fn(cmd);
 
+#ifdef MUL_EV_LOOP
 		/* distribute finished cmds to different event poll */
+		/* find out corresponding connection */
+		struct iser_task *task = container_of(cmd, struct iser_task, scmd);
+		struct iser_conn *conn = task->conn;
+
+		pthread_mutex_lock(&conn->finished_lock);
+		list_add_tail(&cmd->bs_list, &conn->finished_list);
+		pthread_mutex_unlock(&conn->finished_lock);
+
+		pthread_cond_signal(&conn->finished_cond);
+#else
 		pthread_mutex_lock(&finished_lock);
 		list_add_tail(&cmd->bs_list, &finished_list);
 		pthread_mutex_unlock(&finished_lock);
@@ -286,6 +303,7 @@ static void *bs_thread_worker_fn(void *arg)
 			pthread_cond_signal(&finished_cond);
 		else
 			kill(getpid(), SIGUSR2);
+#endif
 	}
 
 	pthread_exit(NULL);
@@ -475,7 +493,6 @@ void bs_thread_close(struct bs_thread_info *info)
 		pthread_cond_broadcast(&info->pending_cond[i]);
 	}
 #endif
-
 
 	for (i = 0; info->worker_thread[i] && i < info->nr_worker_threads; i++)
 		pthread_join(info->worker_thread[i], NULL);

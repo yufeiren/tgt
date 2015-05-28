@@ -1387,6 +1387,12 @@ int iser_conn_init(struct iser_conn *conn)
 #ifdef MUL_EV_LOOP
 	INIT_LIST_HEAD(&conn->sched_events_list);
 	INIT_LIST_HEAD(&conn->events_list);
+
+	INIT_LIST_HEAD(&conn->finished_list);
+	INIT_LIST_HEAD(&conn->ack_list);
+
+	pthread_mutex_init(&conn->finished_lock, NULL);
+	pthread_cond_init(&conn->finished_cond, NULL);
 #endif
 
 	INIT_LIST_HEAD(&conn->buf_alloc_list);
@@ -1588,6 +1594,92 @@ static int iser_getpeername(struct iscsi_connection *iscsi_conn,
 	return 0;
 }
 
+#ifdef MUL_EV_LOOP
+static void *conn_thread_ack_fn(void *arg)
+{
+	int command, ret, nr;
+	struct scsi_cmd *cmd;
+	struct iser_conn *conn = (struct iser_conn *) arg;
+
+retry:
+	ret = read(conn->command_fd[0], &command, sizeof(command));
+	if (ret < 0) {
+		eprintf("ack pthread will be dead, %m\n");
+		if (errno == EAGAIN || errno == EINTR)
+			goto retry;
+
+		goto out;
+	}
+
+	pthread_mutex_lock(&conn->finished_lock);
+retest:
+	if (list_empty(&conn->finished_list)) {
+		pthread_cond_wait(&conn->finished_cond, &conn->finished_lock);
+		goto retest;
+	}
+
+	while (!list_empty(&conn->finished_list)) {
+		cmd = list_first_entry(&conn->finished_list,
+				 struct scsi_cmd, bs_list);
+
+		dprintf("found %p\n", cmd);
+
+		list_del(&cmd->bs_list);
+		list_add_tail(&cmd->bs_list, &conn->ack_list);
+	}
+
+	pthread_mutex_unlock(&conn->finished_lock);
+
+	nr = 1;
+rewrite:
+	ret = write(conn->done_fd[1], &nr, sizeof(nr));
+	if (ret < 0) {
+		eprintf("can't ack tgtd, %m\n");
+		if (errno == EAGAIN || errno == EINTR)
+			goto rewrite;
+
+		goto out;
+	}
+
+	goto retry;
+out:
+	pthread_exit(NULL);
+}
+
+static void conn_thread_request_done(int fd, int events, void *data)
+{
+	struct scsi_cmd *cmd;
+	int nr_events, ret;
+	struct iser_conn *conn = (struct iser_conn *) data;
+
+	ret = read(conn->done_fd[0], &nr_events, sizeof(nr_events));
+	if (ret < 0) {
+		eprintf("wrong wakeup\n");
+		return;
+	}
+
+	while (!list_empty(&conn->ack_list)) {
+		cmd = list_first_entry(&conn->ack_list,
+				       struct scsi_cmd, bs_list);
+
+		dprintf("back to tgtd, %p\n", cmd);
+
+		list_del(&cmd->bs_list);
+		target_cmd_io_done(cmd, scsi_get_result(cmd));
+	}
+
+rewrite:
+	ret = write(conn->command_fd[1], &nr_events, sizeof(nr_events));
+	if (ret < 0) {
+		eprintf("can't write done, %m\n");
+		if (errno == EAGAIN || errno == EINTR)
+			goto rewrite;
+
+		return;
+	}
+}
+#endif
+
 static void iser_cm_connect_request(struct rdma_cm_event *ev)
 {
 	struct rdma_cm_id *cm_id = ev->id;
@@ -1714,6 +1806,37 @@ static void iser_cm_connect_request(struct rdma_cm_event *ev)
 		goto free_conn;
 	}
 	dprintf("(per conn) conn_event_add success\n");
+
+	pthread_cond_init(&conn->finished_cond, NULL);
+	pthread_mutex_init(&conn->finished_lock, NULL);
+
+	err = pipe(conn->command_fd);
+	if (err) {
+		eprintf("(per conn) failed to create command pipe, %m\n");
+		goto free_conn;
+	}
+
+	err = pipe(conn->done_fd);
+	if (err) {
+		eprintf("failed to done command pipe, %m\n");
+		goto free_conn;
+	}
+
+	err = conn_event_add(conn->done_fd[0], EPOLLIN, conn_thread_request_done, conn);
+	if (err) {
+		eprintf("failed to add epoll event\n");
+		goto free_conn;
+	}
+
+	err = pthread_create(&conn->ack_thread, NULL, conn_thread_ack_fn, conn);
+	if (err) {
+		eprintf("failed to create an ack thread, %s\n", strerror(err));
+		goto free_conn;
+	}
+
+	err = write(conn->command_fd[1], &err, sizeof(err));
+	if (err <= 0)
+		goto free_conn;
 #endif
 
 	/* relate iser and rdma connections */

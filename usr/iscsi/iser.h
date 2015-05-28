@@ -198,6 +198,13 @@ struct iser_conn {
 	int ep_fd;
 
 	/* response related resources */
+	int command_fd[2];
+	int done_fd[2];
+	pthread_t ack_thread;
+	struct list_head finished_list;
+	struct list_head ack_list;
+	pthread_mutex_t finished_lock;
+	pthread_cond_t finished_cond;
 #endif
 	struct ibv_qp *qp_hndl;
 	struct rdma_cm_id *cm_id;
