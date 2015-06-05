@@ -452,6 +452,7 @@ tgtadm_err bs_thread_open(struct bs_thread_info *info, request_func_t *rfn,
 			if (ret)
 				goto destroy_threads;
 		}
+		dprintf("new worker THREAD: %u\n", info->worker_thread[i]);
 	}
 	pthread_mutex_unlock(&info->startup_lock);
 	info->nr_worker_threads = nr_threads;

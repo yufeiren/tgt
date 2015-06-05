@@ -147,6 +147,7 @@ static int conn_event_add(int fd, int events, \
 			  event_handler_t handler, void *data);
 static void conn_add_sched_event(struct event_data *evt, \
 				 struct iser_conn *conn);
+static void conn_remove_sched_event(struct event_data *evt);
 static void conn_handle_cq_event(int fd, int events, void *data);
 static void *conn_event_loop(void *arg);
 static void conn_sched_poll_cq(struct event_data *tev);
@@ -157,8 +158,11 @@ static inline void schedule_task_iosubmit(struct iser_task *task,
 					  struct iser_conn *conn)
 {
 	list_add_tail(&task->exec_list, &conn->iosubmit_list);
+#ifdef MUL_EV_LOOP
+	conn_add_sched_event(&conn->sched_iosubmit, conn);
+#else
 	tgt_add_sched_event(&conn->sched_iosubmit);
-
+#endif
 	dprintf("task:%p tag:0x%04"PRIx64 " cmdsn:0x%x\n",
 		task, task->tag, task->cmd_sn);
 }
@@ -167,8 +171,11 @@ static inline void schedule_rdma_read(struct iser_task *task,
 				      struct iser_conn *conn)
 {
 	list_add_tail(&task->rdma_list, &conn->rdma_rd_list);
+#ifdef MUL_EV_LOOP
+	conn_add_sched_event(&conn->sched_rdma_rd, conn);
+#else
 	tgt_add_sched_event(&conn->sched_rdma_rd);
-
+#endif
 	dprintf("task:%p tag:0x%04"PRIx64 " cmdsn:0x%x\n",
 		task, task->tag, task->cmd_sn);
 }
@@ -177,8 +184,11 @@ static inline void schedule_resp_tx(struct iser_task *task,
 				    struct iser_conn *conn)
 {
 	list_add_tail(&task->tx_list, &conn->resp_tx_list);
+#ifdef MUL_EV_LOOP
+	conn_add_sched_event(&conn->sched_tx, conn);
+#else
 	tgt_add_sched_event(&conn->sched_tx);
-
+#endif
 	dprintf("task:%p tag:0x%04"PRIx64 " cmdsn:0x%x\n",
 		task, task->tag, task->cmd_sn);
 }
@@ -187,8 +197,11 @@ static inline void schedule_post_recv(struct iser_task *task,
 				      struct iser_conn *conn)
 {
 	list_add_tail(&task->recv_list, &conn->post_recv_list);
+#ifdef MUL_EV_LOOP
+	conn_add_sched_event(&conn->sched_post_recv, conn);
+#else
 	tgt_add_sched_event(&conn->sched_post_recv);
-
+#endif
 	dprintf("task:%p tag:0x%04"PRIx64 " cmdsn:0x%x\n",
 		task, task->tag, task->cmd_sn);
 }
@@ -931,7 +944,11 @@ static void iser_task_free_rdma_buf(struct iser_task *task, struct iser_membuf *
 	iser_dev_free_rdma_buf(dev, rdma_buf);
 	if (unlikely(dev->waiting_for_mem)) {
 		dev->waiting_for_mem = 0;
+#ifdef MUL_EV_LOOP
+		conn_add_sched_event(&conn->sched_buf_alloc, conn);
+#else
 		tgt_add_sched_event(&conn->sched_buf_alloc);
+#endif
 	}
 }
 
@@ -1434,12 +1451,19 @@ void iser_conn_close(struct iser_conn *conn)
 	pthread_mutex_unlock(&iser_conn_list_lock);
 #endif
 
+#ifdef MUL_EV_LOOP
+	conn_remove_sched_event(&conn->sched_buf_alloc);
+	conn_remove_sched_event(&conn->sched_rdma_rd);
+        conn_remove_sched_event(&conn->sched_iosubmit);
+	conn_remove_sched_event(&conn->sched_tx);
+	conn_remove_sched_event(&conn->sched_post_recv);
+#else
 	tgt_remove_sched_event(&conn->sched_buf_alloc);
 	tgt_remove_sched_event(&conn->sched_rdma_rd);
 	tgt_remove_sched_event(&conn->sched_iosubmit);
 	tgt_remove_sched_event(&conn->sched_tx);
 	tgt_remove_sched_event(&conn->sched_post_recv);
-
+#endif
 	conn->h.state = STATE_CLOSE;
 	eprintf("conn:%p cm_id:0x%p state: CLOSE, refcnt:%d\n",
 		&conn->h, conn->cm_id, conn->h.refcount);
@@ -1538,7 +1562,11 @@ void iser_conn_put(struct iser_conn *conn)
 	dprintf("refcnt:%d\n", conn->h.refcount);
 	if (unlikely(conn->h.refcount == 0)) {
 		assert(conn->h.state == STATE_CLOSE);
+#ifdef MUL_EV_LOOP
+		conn_add_sched_event(&conn->sched_conn_free, conn);
+#else
 		tgt_add_sched_event(&conn->sched_conn_free);
+#endif
 	}
 }
 
@@ -1793,6 +1821,7 @@ static void iser_cm_connect_request(struct rdma_cm_event *ev)
 		goto free_conn;
 	}
 
+	dprintf("(per conn) conn_event_loop THREAD id is %u\n", conn->ev_tid);
 	dprintf("(per conn) conn: %p\n", conn);
 	dprintf("(per conn) conn cq fd: %d\n", conn->cq_channel->fd);
 	dprintf("(per conn) EPOLLIN: %d\n", EPOLLIN);
@@ -1833,6 +1862,7 @@ static void iser_cm_connect_request(struct rdma_cm_event *ev)
 		eprintf("failed to create an ack thread, %s\n", strerror(err));
 		goto free_conn;
 	}
+	dprintf("(per conn) conn_thread_ack_fn THREAD: %u\n", conn->ack_thread);
 
 	err = write(conn->command_fd[1], &err, sizeof(err));
 	if (err <= 0)
@@ -2105,7 +2135,11 @@ static int iser_logout_exec(struct iser_task *task)
 	list_add_tail(&task->tx_list, &conn->resp_tx_list);
 	dprintf("add to tx list, logout resp task:%p tag:0x%04"PRIx64 " cmdsn:0x%x\n",
 		task, task->tag, task->cmd_sn);
+#ifdef MUL_EV_LOOP
+	conn_remove_sched_event(&conn->sched_tx);
+#else
 	tgt_remove_sched_event(&conn->sched_tx);
+#endif
 	iser_sched_tx(&conn->sched_tx);
 
 	return 0;
@@ -3365,11 +3399,12 @@ static void handle_wc_error(struct ibv_wc *wc)
 			wc->opcode, wc, req, task, conn);
 		break;
 	}
-
+	/*
 	if (conn) {
 		iser_conn_put(conn);
 		iser_conn_close(conn);
 	}
+	*/
 }
 
 /*
@@ -3417,7 +3452,6 @@ static void iser_rearm_completions(struct iser_device *dev)
 
 	dev->poll_sched.sched_handler = iser_sched_consume_cq;
 	tgt_add_sched_event(&dev->poll_sched);
-
 	num_delayed_arm = 0;
 }
 
@@ -3499,9 +3533,14 @@ static void iser_handle_cq_event(int fd __attribute__ ((unused)),
 
 	/* if a poll was previosuly scheduled, remove it,
 	   as it will be scheduled when necessary */
-	if (dev->poll_sched.scheduled)
+	if (dev->poll_sched.scheduled) {
+#ifdef MUL_EV_LOOP
+		conn_remove_sched_event(&dev->poll_sched);
+#else
 		tgt_remove_sched_event(&dev->poll_sched);
-
+#endif
+	}
+	
 	iser_poll_cq_armable(dev);
 }
 
@@ -3676,8 +3715,11 @@ static void iser_device_release(struct iser_device *dev)
 
 	tgt_event_del(dev->ibv_ctxt->async_fd);
 	tgt_event_del(dev->cq_channel->fd);
+#ifdef MUL_EV_LOOP
+	conn_remove_sched_event(&dev->poll_sched);
+#else
 	tgt_remove_sched_event(&dev->poll_sched);
-
+#endif
 	err = ibv_destroy_cq(dev->cq);
 	if (err)
 		eprintf("ibv_destroy_cq failed: (errno=%d %m)\n", errno);
@@ -3893,7 +3935,7 @@ static void conn_handle_cq_event(int fd, int events, void *data)
 	/* if a poll was previosuly scheduled, remove it,
 	   as it will be scheduled when necessary */
 	if (conn->poll_sched.scheduled)
-		tgt_remove_sched_event(&conn->poll_sched);
+		conn_remove_sched_event(&conn->poll_sched);
 
 	conn_poll_cq_armable(conn);
 }
@@ -3912,6 +3954,14 @@ static void conn_add_sched_event(struct event_data *evt, struct iser_conn *conn)
 	}
 }
 
+static void conn_remove_sched_event(struct event_data *evt)
+{
+	if (evt->scheduled) {
+		evt->scheduled = 0;
+		list_del_init(&evt->e_list);
+	}
+}
+
 static int conn_exec_scheduled(struct iser_conn *conn)
 {
 	struct list_head *last_sched;
@@ -3923,7 +3973,7 @@ static int conn_exec_scheduled(struct iser_conn *conn)
 		last_sched = conn->sched_events_list.prev;
 		list_for_each_entry_safe(tev, tevn, &conn->sched_events_list,
 					 e_list) {
-			tgt_remove_sched_event(tev);
+			conn_remove_sched_event(tev);
 			tev->sched_handler(tev);
 			if (&tev->e_list == last_sched)
 				break;

@@ -56,6 +56,10 @@ static char program_name[] = "tgtd";
 static LIST_HEAD(tgt_events_list);
 static LIST_HEAD(tgt_sched_events_list);
 
+#ifdef MUL_EV_LOOP
+static pthread_mutex_t tgt_sched_events_list_lock = PTHREAD_MUTEX_INITIALIZER;
+#endif
+
 static struct option const long_options[] = {
 	{"foreground", no_argument, 0, 'f'},
 	{"control-port", required_argument, 0, 'C'},

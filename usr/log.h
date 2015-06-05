@@ -26,6 +26,7 @@
 #ifndef LOG_H
 #define LOG_H
 
+#include <pthread.h>
 #include <sys/sem.h>
 
 #define likely(x)       __builtin_expect(!!(x), 1)
@@ -93,7 +94,7 @@ do {									\
 #define dprintf(fmt, args...)						\
 do {									\
 	if (unlikely(is_debug))						\
-		log_debug("%s(%d) " fmt, __FUNCTION__, __LINE__, ##args); \
+		log_debug("(%u)%s(%d) " fmt, pthread_self(), __FUNCTION__, __LINE__, ##args); \
 } while (0)
 #endif
 
