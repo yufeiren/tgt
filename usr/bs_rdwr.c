@@ -452,7 +452,7 @@ write:
 				sio_size = cmd->dev->size - ior->offset - (uint64_t) ior->in_offset;
 			dprintf("numa cache: pread data %d bytes offset %ld\n", sio_size, ior->offset);
 			ret = pread64(fd, cb->addr, sio_size, ior->offset);
-			if (ret != cb->cbs)
+			if (ret != sio_size)
 				set_medium_error(&result, &key, &asc);
 
 			/* copy data into memory */
