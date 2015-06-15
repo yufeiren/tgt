@@ -205,6 +205,9 @@ struct iser_conn {
 	struct list_head ack_list;
 	pthread_mutex_t finished_lock;
 	pthread_cond_t finished_cond;
+
+	/* per connection memory buffer list */
+	struct list_head membuf_free, membuf_alloc;
 #endif
 	struct ibv_qp *qp_hndl;
 	struct rdma_cm_id *cm_id;

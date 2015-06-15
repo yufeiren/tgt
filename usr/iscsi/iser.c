@@ -824,6 +824,38 @@ static void iser_destroy_rdma_buf_pool(struct iser_device *dev)
 	dev->membuf_listbuf = NULL;
 }
 
+#ifdef MUL_EV_LOOP
+static struct iser_membuf *iser_conn_alloc_rdma_buf(struct iser_conn *conn)
+{
+	struct iser_membuf *rdma_buf;
+
+	if (unlikely(list_empty(&conn->membuf_free)))
+		return NULL;
+
+	rdma_buf = list_first_entry(&conn->membuf_free, struct iser_membuf,
+				    pool_list);
+	list_del(&rdma_buf->pool_list);
+	list_add_tail(&rdma_buf->pool_list, &conn->membuf_alloc);
+
+	dprintf("alloc(lockless):%p\n", rdma_buf);
+	return rdma_buf;
+}
+
+static void iser_conn_free_rdma_buf(struct iser_conn *conn, struct iser_membuf *rdma_buf)
+{
+
+
+	if (unlikely(!rdma_buf || !rdma_buf->rdma))
+		return;
+
+	dprintf("free(lockless):%p\n", rdma_buf);
+
+	/* add to the free list head to reuse recently used buffers first */
+	list_del(&rdma_buf->pool_list);
+	list_add(&rdma_buf->pool_list, &conn->membuf_free);
+}
+#endif
+
 static struct iser_membuf *iser_dev_alloc_rdma_buf(struct iser_device *dev)
 {
 	struct iser_membuf *rdma_buf;
@@ -837,11 +869,13 @@ static struct iser_membuf *iser_dev_alloc_rdma_buf(struct iser_device *dev)
 	rdma_buf = list_first_entry(&dev->membuf_free, struct iser_membuf,
 				    pool_list);
 	list_del(&rdma_buf->pool_list);
+#ifndef MUL_EV_LOOP
 	list_add_tail(&rdma_buf->pool_list, &dev->membuf_alloc);
+#endif
 #ifdef MUL_EV_LOOP
 	pthread_mutex_unlock(&dev->membuf_lock);
 #endif
-	dprintf("alloc:%p\n", rdma_buf);
+	dprintf("alloc(mutex):%p\n", rdma_buf);
 	return rdma_buf;
 }
 
@@ -852,7 +886,7 @@ static void iser_dev_free_rdma_buf(struct iser_device *dev, struct iser_membuf *
 	if (unlikely(!rdma_buf || !rdma_buf->rdma))
 		return;
 
-	dprintf("free %p\n", rdma_buf);
+	dprintf("free(mutex):%p\n", rdma_buf);
 
 	/* add to the free list head to reuse recently used buffers first */
 #ifdef MUL_EV_LOOP
@@ -878,7 +912,11 @@ static int iser_task_alloc_rdma_bufs(struct iser_task *task)
 				&conn->h, task, task->tag, task->rdma_rd_sz);
 			return -E2BIG;
 		}
+#ifdef MUL_EV_LOOP
+		rdma_rd_buf = iser_conn_alloc_rdma_buf(conn);
+#else
 		rdma_rd_buf = iser_dev_alloc_rdma_buf(conn->dev);
+#endif
 		if (unlikely(rdma_rd_buf == NULL))
 			goto no_mem_err;
 
@@ -894,7 +932,11 @@ static int iser_task_alloc_rdma_bufs(struct iser_task *task)
 				&conn->h, task, task->tag, task->rdma_wr_sz);
 			return -E2BIG;
 		}
+#ifdef MUL_EV_LOOP
+		rdma_wr_buf = iser_conn_alloc_rdma_buf(conn);
+#else
 		rdma_wr_buf = iser_dev_alloc_rdma_buf(conn->dev);
+#endif
 		if (unlikely(rdma_wr_buf == NULL))
 			goto no_mem_err;
 
@@ -941,7 +983,11 @@ static void iser_task_free_rdma_buf(struct iser_task *task, struct iser_membuf *
 	struct iser_conn *conn = task->conn;
 	struct iser_device *dev = conn->dev;
 
+#ifdef MUL_EV_LOOP
+	iser_conn_free_rdma_buf(conn, rdma_buf);
+#else
 	iser_dev_free_rdma_buf(dev, rdma_buf);
+#endif
 	if (unlikely(dev->waiting_for_mem)) {
 		dev->waiting_for_mem = 0;
 #ifdef MUL_EV_LOOP
@@ -951,6 +997,48 @@ static void iser_task_free_rdma_buf(struct iser_task *task, struct iser_membuf *
 #endif
 	}
 }
+
+/* Per connection network mangement */
+#ifdef MUL_EV_LOOP
+static int iser_conn_init_rdma_buf_pool(struct iser_device *dev, \
+					struct iser_conn *conn)
+{
+	int i;
+	struct iser_membuf *rdma_buf;
+	
+	/* grab a a group of memory blocks into this conn */
+	INIT_LIST_HEAD(&conn->membuf_free);
+	INIT_LIST_HEAD(&conn->membuf_alloc);
+
+	for (i = 0; i < 100; i++) {
+		rdma_buf = iser_dev_alloc_rdma_buf(dev);
+		if (rdma_buf != NULL) {
+			list_add_tail(&rdma_buf->pool_list, &conn->membuf_free);
+			dprintf("add rdma_buf #%d: %p to conn %p\n", i, rdma_buf, conn);
+		} else
+			break;
+	}
+
+	
+	return 0;
+}
+
+static void iser_conn_destroy_rdma_buf_pool(struct iser_device *dev,
+					    struct iser_conn *conn)
+{
+	struct iser_membuf *rdma_buf;
+	int i;
+	/*	assert(list_empty(&conn->membuf_alloc)); */
+
+	dprintf("start free conn buf pool\n");
+	while (likely(!list_empty(&conn->membuf_free))) {
+		rdma_buf = list_first_entry(&conn->membuf_free,
+					struct iser_membuf, pool_list);
+		dprintf("free rdma_buf #%d: %p from conn: %p\n", i++, rdma_buf, conn);
+		iser_dev_free_rdma_buf(dev, rdma_buf);
+	}
+}
+#endif
 
 static void iser_task_free_out_bufs(struct iser_task *task)
 {
@@ -1464,6 +1552,10 @@ void iser_conn_close(struct iser_conn *conn)
 	tgt_remove_sched_event(&conn->sched_tx);
 	tgt_remove_sched_event(&conn->sched_post_recv);
 #endif
+
+#ifdef MUL_EV_LOOP
+	iser_conn_destroy_rdma_buf_pool(conn->dev, conn);
+#endif
 	conn->h.state = STATE_CLOSE;
 	eprintf("conn:%p cm_id:0x%p state: CLOSE, refcnt:%d\n",
 		&conn->h, conn->cm_id, conn->h.refcount);
@@ -1954,6 +2046,15 @@ static void iser_cm_connect_request(struct rdma_cm_event *ev)
 	   when finalizing the disconnect process */
 	iser_conn_get(conn);
 
+#ifdef MUL_EV_LOOP
+	/* grab a group of memory blocks from dev pool to conn pool */
+	err = iser_conn_init_rdma_buf_pool(dev, conn);
+	if (err) {
+		eprintf("iser_conn_init_rdma_buf_pool failed, %m\n");
+		goto free_conn;
+	}
+	eprintf("iser_conn_init_rdma_buf_pool success: %p\n", conn);
+#endif
 	/* now we can actually accept the connection */
 	err = rdma_accept(conn->cm_id, &conn_param);
 	if (err) {
