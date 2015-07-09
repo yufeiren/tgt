@@ -421,6 +421,9 @@ write:
 		dprintf("numa cache: =================================\n");
 		dprintf("numa cache: start serving a READ io request\n");
 
+		length = scsi_get_in_length(cmd);	/* length asked for */
+		dprintf("numa cache: READ io length is: %d\n", length);
+		
 		nc = nc_pre = NULL;
 
 		for (i = 0; i < cmd->nr_sior; i ++, nc_pre = nc) {
@@ -438,8 +441,11 @@ write:
 			cb = get_cache_block(ior->tid, ior->lun, \
 					     ior->cb_id, nc);
 			if (cb->is_valid == CACHE_VALID) {	/* hit */
-				dprintf("numa cache: cache hit\n");
-				memcpy(scsi_get_in_buffer(cmd) + ior->m_offset, cb->addr + ior->in_offset, ior->length);
+				dprintf("numa cache: cache hit, copy %d bytes\n", \
+					ior->length);
+				memcpy(scsi_get_in_buffer(cmd) + ior->m_offset, \
+				       cb->addr + ior->in_offset, \
+				       ior->length);
 				continue;
 			}
 
@@ -450,15 +456,21 @@ write:
 				sio_size = cb->cbs;
 			else
 				sio_size = cmd->dev->size - ior->offset - (uint64_t) ior->in_offset;
-			dprintf("numa cache: pread data %d bytes offset %ld\n", sio_size, ior->offset);
+			dprintf("numa cache: pread data %d bytes offset %ld\n", \
+				sio_size, ior->offset);
 			ret = pread64(fd, cb->addr, sio_size, ior->offset);
 			if (ret != sio_size)
 				set_medium_error(&result, &key, &asc);
 
 			/* copy data into memory */
 			dprintf("numa cache: copy data into memory\n");
-			dprintf("numa cache: memcpy %" PRId64 " %" PRId64 " %d\n", scsi_get_in_buffer(cmd) + (uint64_t) ior->m_offset, cb->addr + ((uint64_t) ior->in_offset), ior->length);
-			memcpy(scsi_get_in_buffer(cmd) + (uint64_t) ior->m_offset, cb->addr + ((uint64_t) ior->in_offset), ior->length);
+			dprintf("numa cache: memcpy %" PRId64 " %" PRId64 " %d\n", \
+				scsi_get_in_buffer(cmd) + (uint64_t) ior->m_offset, \
+				cb->addr + ((uint64_t) ior->in_offset), \
+				ior->length);
+			memcpy(scsi_get_in_buffer(cmd) + (uint64_t) ior->m_offset, \
+			       cb->addr + ((uint64_t) ior->in_offset), \
+			       ior->length);
 
 			/* update cb into cache */
 			cb->is_valid = CACHE_VALID;

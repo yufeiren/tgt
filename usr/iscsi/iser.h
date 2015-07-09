@@ -206,6 +206,8 @@ struct iser_conn {
 	pthread_mutex_t finished_lock;
 	pthread_cond_t finished_cond;
 
+	int numa_node;		/* preferred NUMA node for CPU and memory */
+	
 	/* per connection memory buffer list */
 	struct list_head membuf_free, membuf_alloc;
 #endif

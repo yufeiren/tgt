@@ -72,6 +72,7 @@ static struct list_head iser_dev_list;
 static struct list_head iser_conn_list;
 #ifdef MUL_EV_LOOP
 static pthread_mutex_t iser_conn_list_lock;
+static int conn_numa_node = 0;
 #endif
 
 #define uint64_from_ptr(p) (uint64_t)(uintptr_t)(p)
@@ -470,13 +471,25 @@ static void iser_prep_rdma_wr_send_req(struct iser_task *task,
 	rdmad->sge.addr = uint64_from_ptr(rdma_buf->addr);
 
 #ifdef NUMA_CACHE
-	if (task->is_read || task->is_write) {
-		dprintf("numa cache: change addr to numa node %d\n", \
-			rdma_buf->cur_node);
+	/*	switch (task->scmd.scb[0]) {
+	case WRITE_6:
+	case WRITE_10:
+	case WRITE_12:
+	case WRITE_16:
+	case READ_6:
+	case READ_10:
+	case READ_12:
+	case READ_16:*/
+		/* change addr to numa node */
+		dprintf("numa cache: opcode %x, change addr to numa node %d\n", \
+			task->scmd.scb[0], rdma_buf->cur_node);
 		rdmad->sge.addr = uint64_from_ptr(rdma_buf->numa_addr[rdma_buf->cur_node]);
 		/* update lkey for numa-aware */
 		rdmad->sge.lkey = rdmad->numa_sge[rdma_buf->cur_node].lkey;
-	}
+		/*		break;
+	default:
+		break;
+		}*/
 #endif
 
 	if (likely(task->rdma_wr_remains <= rdma_buf->size)) {
@@ -837,6 +850,12 @@ static struct iser_membuf *iser_conn_alloc_rdma_buf(struct iser_conn *conn)
 	list_del(&rdma_buf->pool_list);
 	list_add_tail(&rdma_buf->pool_list, &conn->membuf_alloc);
 
+#ifdef NUMA_CACHE
+	rdma_buf->cur_node = 0;
+	rdma_buf->addr = rdma_buf->numa_addr[rdma_buf->cur_node];
+	dprintf("numa cache: default node is %d\n", rdma_buf->cur_node);
+#endif
+
 	dprintf("alloc(lockless):%p\n", rdma_buf);
 	return rdma_buf;
 }
@@ -869,6 +888,11 @@ static struct iser_membuf *iser_dev_alloc_rdma_buf(struct iser_device *dev)
 	rdma_buf = list_first_entry(&dev->membuf_free, struct iser_membuf,
 				    pool_list);
 	list_del(&rdma_buf->pool_list);
+#ifdef NUMA_CACHE
+	rdma_buf->cur_node = 0;
+	rdma_buf->addr = rdma_buf->numa_addr[rdma_buf->cur_node];
+	dprintf("numa cache: default node is %d\n", rdma_buf->cur_node);
+#endif
 #ifndef MUL_EV_LOOP
 	list_add_tail(&rdma_buf->pool_list, &dev->membuf_alloc);
 #endif
@@ -1721,6 +1745,8 @@ static void *conn_thread_ack_fn(void *arg)
 	struct scsi_cmd *cmd;
 	struct iser_conn *conn = (struct iser_conn *) arg;
 
+	/* setup numa affinity */
+	numa_run_on_node(conn->numa_node);
 retry:
 	ret = read(conn->command_fd[0], &command, sizeof(command));
 	if (ret < 0) {
@@ -1906,6 +1932,8 @@ static void iser_cm_connect_request(struct rdma_cm_event *ev)
 	}
 	dprintf("(per conn) create a new event poll - %d\n", conn->ep_fd);
 
+	conn->numa_node = conn_numa_node % hc.nr_numa_nodes;
+	conn_numa_node ++;
 	/* create a dedicate event_base loop thread */
 	err = pthread_create(&conn->ev_tid, NULL, conn_event_loop, conn);
 	if (err) {
@@ -1914,6 +1942,8 @@ static void iser_cm_connect_request(struct rdma_cm_event *ev)
 	}
 
 	dprintf("(per conn) conn_event_loop THREAD id is %u\n", conn->ev_tid);
+	dprintf("(per conn) conn_event_loop THREAD runs on node %d\n", \
+		conn->numa_node);
 	dprintf("(per conn) conn: %p\n", conn);
 	dprintf("(per conn) conn cq fd: %d\n", conn->cq_channel->fd);
 	dprintf("(per conn) EPOLLIN: %d\n", EPOLLIN);
@@ -2509,6 +2539,8 @@ static void iser_scsi_cmd_iosubmit(struct iser_task *task, int not_last)
 
 		scsi_set_out_buffer(scmd, data_buf->addr);
 		scsi_set_out_length(scmd, task->out_len);
+		dprintf("numa cache: write buf addr - %" PRIx64 ", %d\n", \
+			data_buf->addr, task->out_len);
 	}
 	if (task->is_read) {
 		/* ToDo: multiple RDMA-Read buffers */
@@ -2516,6 +2548,8 @@ static void iser_scsi_cmd_iosubmit(struct iser_task *task, int not_last)
 				      struct iser_membuf, task_list);
 		scsi_set_in_buffer(scmd, data_buf->addr);
 		scsi_set_in_length(scmd, task->in_len);
+		dprintf("numa cache: read buf addr - %" PRIx64 ", %d\n", \
+			data_buf->addr, task->in_len);
 	}
 
 	scmd->cmd_itn_id = session->tsih;
@@ -4092,6 +4126,8 @@ static void *conn_event_loop(void *arg)
 	struct epoll_event events[1024];
 	struct event_data *tev;
 
+	/* setup numa affinity */
+	numa_run_on_node(conn->numa_node);
 retry:
 	sched_remains = conn_exec_scheduled(conn);
 	timeout = sched_remains ? 0 : -1;
